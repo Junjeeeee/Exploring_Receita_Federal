@@ -1,0 +1,21 @@
+# Dados e Arquivos Locais
+data/
+*.csv
+*.zip
+*.parquet
+*.delta/
+
+# Python e Ambientes Virtuais
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Databricks e IDEs
+.databricks/
+.vscode/
+.idea/
+
+# Arquivos de configuração de ambiente
+.env
