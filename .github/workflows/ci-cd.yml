@@ -1,0 +1,63 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "**" ] # Gatilho 1: Roda em qualquer branch que você criar
+  pull_request:
+    branches: [ "main" ] # Gatilho 2: Roda quando você tentar fazer merge pra main
+
+jobs:
+  # ---------------------------------------------------
+  # CI: Integração Contínua (Testes) - Roda Sempre
+  # ---------------------------------------------------
+  testes-unitarios:
+    name: Validar Testes com Pytest
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Fazer Checkout do Código
+        uses: actions/checkout@v4
+      
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Instalar e Configurar o Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: latest
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          
+      - name: Carregar Cache de Dependências
+        uses: actions/cache@v4
+        id: cached-poetry-dependencies
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          
+      - name: Instalar Dependências
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+        
+      - name: Executar Pytest
+        run: poetry run pytest tests/
+
+  # ---------------------------------------------------
+  # CD: Entrega Contínua (Deploy) - Roda Só na Main
+  # ---------------------------------------------------
+  deploy-databricks:
+    name: Deploy no Databricks
+    needs: testes-unitarios # REGRA 1: Só inicia se os testes passarem
+    if: github.ref == 'refs/heads/main' # REGRA 2: Só inicia se for a branch main
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Fazer Checkout do Código
+        uses: actions/checkout@v4
+        
+      - name: Echo de Simulação (Futuro DABs)
+        run: |
+          echo "Testes passaram com sucesso na main!"
+          echo "Aqui entrará o comando: databricks bundle deploy"
