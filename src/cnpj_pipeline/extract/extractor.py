@@ -11,7 +11,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 
-# Carregar variáveis de ambiente (Credenciais AWS devem estar configuradas)
+# Carregar variáveis de ambiente (Credenciais AWS no .env)
 load_dotenv()
 
 # ---------------------------------------------------------
@@ -22,7 +22,7 @@ URL_DOWNLOAD_BASE = f"https://arquivos.receitafederal.gov.br/public.php/dav/file
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
 
 PASTA_TEMP = "tmp_receita"
-AWS_BUCKET_NAME = "seu-bucket-tcc-datalake" # SUBSTITUA PELO SEU BUCKET
+AWS_BUCKET_NAME = "seu-bucket-tcc-datalake" # SUBSTITUA PELO NOME DO SEU BUCKET
 S3_PREFIX = "bronze/receita_federal"
 STATE_FILE = "last_processed_month.txt"
 
@@ -57,12 +57,14 @@ SCHEMAS_CNPJ = {
 }
 
 def obter_proximo_mes(mes_atual_str):
+    """Calcula o mês seguinte a processar."""
     if not mes_atual_str:
         return "2024-01"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
 def verificar_disponibilidade_mes(mes_str):
+    """Verifica se o mês já está disponível no servidor WebDAV da Receita."""
     try:
         response = requests.request("PROPFIND", f"{URL_DOWNLOAD_BASE}/{mes_str}/", headers=HEADERS, timeout=30)
         return response.status_code in (200, 207)
@@ -70,6 +72,7 @@ def verificar_disponibilidade_mes(mes_str):
         return False
 
 def descarregar_e_extrair(url, nome_zip):
+    """Baixa o ZIP e extrai os CSVs para a pasta temporária."""
     caminho_zip = os.path.join(PASTA_TEMP, nome_zip)
     try:
         with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
@@ -91,8 +94,18 @@ def descarregar_e_extrair(url, nome_zip):
         if os.path.exists(caminho_zip): os.remove(caminho_zip)
         return []
 
+def aplicar_mascara_mei(chunk, nome_tabela):
+    """Mascara o CPF na Razão Social do MEI substituindo-o pelo CNPJ Básico."""
+    regex_cpf = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
+    if nome_tabela == "EMPRESA":
+        chunk['razao_social'] = [
+            regex_cpf.sub(str(cnpj), str(razao)) 
+            for razao, cnpj in zip(chunk['razao_social'], chunk['cnpj_basico'])
+        ]
+    return chunk
+
 def enviar_para_s3(caminho_local, chave_s3):
-    """Envia o arquivo para o bucket S3 na AWS."""
+    """Envia o arquivo gerado para o S3 na AWS."""
     print(f"  -> A enviar {caminho_local} para s3://{AWS_BUCKET_NAME}/{chave_s3} ...")
     s3_client = boto3.client('s3')
     try:
@@ -103,63 +116,41 @@ def enviar_para_s3(caminho_local, chave_s3):
         raise e
 
 def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidade_zips=10):
+    """Orquestra leitura, transformação e carga incremental do arquivo Parquet."""
     print(f"\n--- A processar Tabela {nome_tabela} ({diretorio_mes}) ---")
     
-    # Prepara o ficheiro Parquet local para escrita incremental
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
     
-    # Regex para capturar CPFs (com ou sem pontuação) na Razão Social
-    regex_cpf = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
-
     for i in range(quantidade_zips):
         nome_arquivo = f"{prefixo_zip}{i}.zip"
         url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
         ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
         
         for ficheiro in ficheiros_csv:
-            # Processa em blocos de 100 mil linhas para não estourar a RAM local
             chunks = pd.read_csv(ficheiro, sep=';', header=None, names=colunas, 
                                  encoding='iso-8859-1', chunksize=100_000, dtype=str)
             
             for chunk in chunks:
-                # Trata nulos
                 chunk = chunk.fillna("")
-
-                # Regra de Mascaramento do MEI na tabela EMPRESA
-                if nome_tabela == "EMPRESA":
-                    # Substitui o padrão CPF pelo CNPJ Básico usando list comprehension (muito rápido)
-                    chunk['razao_social'] = [
-                        regex_cpf.sub(str(cnpj), str(razao)) 
-                        for razao, cnpj in zip(chunk['razao_social'], chunk['cnpj_basico'])
-                    ]
-
-                # Adiciona colunas de controle da Ingestão
+                chunk = aplicar_mascara_mei(chunk, nome_tabela)
+                
                 chunk['mes_referencia'] = diretorio_mes
                 chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Converte o bloco Pandas para tabela do PyArrow
                 tabela_arrow = pa.Table.from_pandas(chunk)
                 
-                # Inicializa o escritor Parquet no primeiro chunk
                 if writer is None:
                     writer = pq.ParquetWriter(caminho_parquet_local, tabela_arrow.schema, compression='snappy')
                 
-                # Escreve o chunk no arquivo local de forma agregada
                 writer.write_table(tabela_arrow)
                 
-            # Exclui o CSV extraído após processar seus blocos
             os.remove(ficheiro)
 
-    # Fecha o arquivo local Parquet
     if writer:
         writer.close()
-        
-        # Faz o Upload do arquivo finalizado para o Databricks (AWS S3)
         chave_s3 = f"{S3_PREFIX}/{nome_tabela.lower()}/mes_referencia={diretorio_mes}/dados.parquet"
         enviar_para_s3(caminho_parquet_local, chave_s3)
-        
-        # Exclui o Parquet local para liberar espaço no HD
         os.remove(caminho_parquet_local)
     else:
         print(f"  [AVISO] Nenhum dado extraído para {nome_tabela}.")
@@ -176,7 +167,7 @@ def executar_pipeline_local_para_nuvem():
     print(f"A verificar novos dados para: {proximo_mes}...")
 
     if verificar_disponibilidade_mes(proximo_mes):
-        print(f"✅ Dados encontrados! A extrair, transformar no PC e enviar para nuvem...")
+        print(f"✅ Dados encontrados! A iniciar extração...")
         
         tabelas_config = [
             ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"], 10),
