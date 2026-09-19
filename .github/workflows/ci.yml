@@ -18,12 +18,12 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10" # Utilize a versão de Python do seu projeto local
+          python-version: "3.12" # Ou a versão que você usa no Fedora
           
       - name: Instalar e Configurar o Poetry
         uses: snok/install-poetry@v1
         with:
-          version: 1.8.2
+          version: latest # Garante o Poetry 2.x igual ao do seu ambiente local
           virtualenvs-create: true
           virtualenvs-in-project: true
           
