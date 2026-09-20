@@ -4,6 +4,7 @@ import zipfile
 import requests
 import shutil
 import boto3
+import argparse
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,22 +12,18 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 
-# Carregar variáveis de ambiente (Credenciais AWS no .env)
 load_dotenv()
 
-# ---------------------------------------------------------
-# Configurações do Repositório da Receita e S3
-# ---------------------------------------------------------
 TOKEN_SHARE = "YggdBLfdninEJX9"
 URL_DOWNLOAD_BASE = f"https://arquivos.receitafederal.gov.br/public.php/dav/files/{TOKEN_SHARE}"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
 
 PASTA_TEMP = "tmp_receita"
-AWS_BUCKET_NAME = "seu-bucket-tcc-datalake" # SUBSTITUA PELO NOME DO SEU BUCKET
+AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 S3_PREFIX = "bronze/receita_federal"
 STATE_FILE = "last_processed_month.txt"
 
-# Schemas herdados
+# Schemas atualizados com as tabelas de domínio
 SCHEMAS_CNPJ = {
     "EMPRESA": [
         "cnpj_basico", "razao_social", "natureza_juridica",
@@ -53,18 +50,19 @@ SCHEMAS_CNPJ = {
         "cnpj_cpf_socio", "qualificacao_socio", "data_entrada_sociedade",
         "pais", "representante_legal", "nome_representante",
         "qualificacao_representante_legal", "faixa_etaria"
+    ],
+    "DOMINIO": [
+        "codigo", "descricao"
     ]
 }
 
 def obter_proximo_mes(mes_atual_str):
-    """Calcula o mês seguinte a processar."""
     if not mes_atual_str:
         return "2024-01"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
 def verificar_disponibilidade_mes(mes_str):
-    """Verifica se o mês já está disponível no servidor WebDAV da Receita."""
     try:
         response = requests.request("PROPFIND", f"{URL_DOWNLOAD_BASE}/{mes_str}/", headers=HEADERS, timeout=30)
         return response.status_code in (200, 207)
@@ -72,7 +70,6 @@ def verificar_disponibilidade_mes(mes_str):
         return False
 
 def descarregar_e_extrair(url, nome_zip):
-    """Baixa o ZIP e extrai os CSVs para a pasta temporária."""
     caminho_zip = os.path.join(PASTA_TEMP, nome_zip)
     try:
         with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
@@ -95,7 +92,6 @@ def descarregar_e_extrair(url, nome_zip):
         return []
 
 def aplicar_mascara_mei(chunk, nome_tabela):
-    """Mascara o CPF na Razão Social do MEI substituindo-o pelo CNPJ Básico."""
     regex_cpf = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
     if nome_tabela == "EMPRESA":
         chunk['razao_social'] = [
@@ -105,7 +101,6 @@ def aplicar_mascara_mei(chunk, nome_tabela):
     return chunk
 
 def enviar_para_s3(caminho_local, chave_s3):
-    """Envia o arquivo gerado para o S3 na AWS."""
     print(f"  -> A enviar {caminho_local} para s3://{AWS_BUCKET_NAME}/{chave_s3} ...")
     s3_client = boto3.client('s3')
     try:
@@ -115,15 +110,16 @@ def enviar_para_s3(caminho_local, chave_s3):
         print(f"     [!] Falha no upload para o S3: {e}")
         raise e
 
-def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidade_zips=10):
-    """Orquestra leitura, transformação e carga incremental do arquivo Parquet."""
+def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidade_zips=10, local_test=False):
     print(f"\n--- A processar Tabela {nome_tabela} ({diretorio_mes}) ---")
     
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
     
     for i in range(quantidade_zips):
-        nome_arquivo = f"{prefixo_zip}{i}.zip"
+        # Correção aplicada: Se for 1 arquivo único (Simples ou Domínios), não usa índice numérico no final.
+        nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
+        
         url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
         ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
         
@@ -150,44 +146,65 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
     if writer:
         writer.close()
         chave_s3 = f"{S3_PREFIX}/{nome_tabela.lower()}/mes_referencia={diretorio_mes}/dados.parquet"
-        enviar_para_s3(caminho_parquet_local, chave_s3)
-        os.remove(caminho_parquet_local)
+        
+        if not local_test:
+            enviar_para_s3(caminho_parquet_local, chave_s3)
+            os.remove(caminho_parquet_local)
+        else:
+            print(f"  [MODO TESTE] Upload para S3 cancelado. Arquivo mantido em: {caminho_parquet_local}")
     else:
         print(f"  [AVISO] Nenhum dado extraído para {nome_tabela}.")
 
-def executar_pipeline_local_para_nuvem():
+def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
     os.makedirs(PASTA_TEMP, exist_ok=True)
     
-    ultimo_mes = None
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            ultimo_mes = f.read().strip()
-
-    proximo_mes = obter_proximo_mes(ultimo_mes)
-    print(f"A verificar novos dados para: {proximo_mes}...")
+    if test_month:
+        proximo_mes = test_month
+        print(f"Atenção: Forçando execução para o mês {proximo_mes}")
+    else:
+        ultimo_mes = None
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                ultimo_mes = f.read().strip()
+        proximo_mes = obter_proximo_mes(ultimo_mes)
+        print(f"A verificar novos dados para: {proximo_mes}...")
 
     if verificar_disponibilidade_mes(proximo_mes):
         print(f"✅ Dados encontrados! A iniciar extração...")
         
+        # Inclusão das 5 tabelas de domínio do documento
         tabelas_config = [
             ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"], 10),
             ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"], 10),
             ("SOCIO", "Socios", SCHEMAS_CNPJ["SOCIO"], 10),
-            ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"], 1)
+            ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"], 1),
+            ("MUNICIPIOS", "Municipios", SCHEMAS_CNPJ["DOMINIO"], 1),
+            ("PAISES", "Paises", SCHEMAS_CNPJ["DOMINIO"], 1),
+            ("CNAES", "Cnaes", SCHEMAS_CNPJ["DOMINIO"], 1),
+            ("NATUREZAS", "Naturezas", SCHEMAS_CNPJ["DOMINIO"], 1),
+            ("QUALIFICACOES", "Qualificacoes", SCHEMAS_CNPJ["DOMINIO"], 1)
         ]
         
         for nome_tabela, prefixo, schema, qtde in tabelas_config:
-            processar_tabela(proximo_mes, nome_tabela, prefixo, schema, qtde)
+            processar_tabela(proximo_mes, nome_tabela, prefixo, schema, qtde, local_test)
             
-        with open(STATE_FILE, "w") as f:
-            f.write(proximo_mes)
-            
-        print(f"🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
+        if not local_test:
+            with open(STATE_FILE, "w") as f:
+                f.write(proximo_mes)
+            print(f"🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
+        else:
+            print(f"🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado na máquina local.")
     else:
         print("⏳ Dados ainda não disponíveis.")
 
-    if os.path.exists(PASTA_TEMP):
+    if not local_test and os.path.exists(PASTA_TEMP):
         shutil.rmtree(PASTA_TEMP)
 
 if __name__ == "__main__":
-    executar_pipeline_local_para_nuvem()
+    parser = argparse.ArgumentParser(description="Extrator de Dados da Receita Federal para S3")
+    parser.add_argument("--local-test", action="store_true", help="Executa sem enviar para o S3 e sem apagar os Parquets locais.")
+    parser.add_argument("--month", type=str, help="Força a execução de um mês específico (ex: 2024-01).")
+    
+    args = parser.parse_args()
+    
+    executar_pipeline_local_para_nuvem(local_test=args.local_test, test_month=args.month)
