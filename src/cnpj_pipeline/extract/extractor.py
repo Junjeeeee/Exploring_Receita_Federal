@@ -14,10 +14,15 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 from tqdm import tqdm
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 load_dotenv()
 
-TOKEN_SHARE = "YggdBLfdninEJX9"
+# --- SEGURANÇA: Token oculto ---
+TOKEN_SHARE = os.getenv("TOKEN_SHARE")
+if not TOKEN_SHARE:
+    raise ValueError("ERRO FATAL: Variável TOKEN_SHARE não encontrada no ficheiro .env")
+
 URL_DOWNLOAD_BASE = f"https://arquivos.receitafederal.gov.br/public.php/dav/files/{TOKEN_SHARE}"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
 
@@ -25,6 +30,11 @@ PASTA_TEMP = "tmp_receita"
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 S3_PREFIX = "bronze/receita_federal"
 STATE_FILE = "last_processed_month.txt"
+
+# --- PERFORMANCE: Regex compilada em nível global ---
+REGEX_CPF_SUJO = re.compile(r'(?i)[-.\s]*(?:CPF)?[-.\s]*(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)[-.\s]*')
+REGEX_FILIAL_SUJA = re.compile(r'^/?\d{4}-?\d{2}')
+REGEX_LIXO_INICIO = re.compile(r'^[-.\s/]+')
 
 SCHEMAS_CNPJ = {
     "EMPRESA": [
@@ -60,7 +70,7 @@ SCHEMAS_CNPJ = {
 
 def obter_proximo_mes(mes_atual_str):
     if not mes_atual_str:
-        return "2023-05"
+        return "2024-01"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
@@ -68,87 +78,92 @@ def verificar_disponibilidade_mes(mes_str):
     try:
         response = requests.request("PROPFIND", f"{URL_DOWNLOAD_BASE}/{mes_str}/", headers=HEADERS, timeout=30)
         return response.status_code in (200, 207)
-    except:
+    # Exceção estrita para não engolir erros de sistema operativo (ex: Ctrl+C)
+    except requests.RequestException:
         return False
 
+# --- RESILIÊNCIA: Fallback exponencial em caso de falha de rede ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(requests.RequestException),
+    reraise=True
+)
 def descarregar_e_extrair(url, nome_zip):
     caminho_zip = os.path.join(PASTA_TEMP, nome_zip)
-    try:
-        with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
+    
+    with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
+        r.raise_for_status()
+        total_size = int(r.headers.get('content-length', 0))
+        
+        with open(caminho_zip, 'wb') as f, tqdm(
+            desc=nome_zip, total=total_size, unit='iB',
+            unit_scale=True, unit_divisor=1024, leave=False
+        ) as bar:
+            for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
+                if chunk:
+                    size = f.write(chunk)
+                    bar.update(size)
+                    
+    extraidos = []
+    with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
+        zip_ref.extractall(PASTA_TEMP)
+        for nome_interno in zip_ref.namelist():
+            extraidos.append(os.path.join(PASTA_TEMP, nome_interno))
             
-            with open(caminho_zip, 'wb') as f, tqdm(
-                desc=nome_zip,
-                total=total_size,
-                unit='iB',
-                unit_scale=True,
-                unit_divisor=1024,
-                leave=False
-            ) as bar:
-                for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
-                    if chunk:
-                        size = f.write(chunk)
-                        bar.update(size)
-                        
-        extraidos = []
-        with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
-            zip_ref.extractall(PASTA_TEMP)
-            for nome_interno in zip_ref.namelist():
-                extraidos.append(os.path.join(PASTA_TEMP, nome_interno))
-                
-        os.remove(caminho_zip)
-        return extraidos
-    except Exception as e:
-        print(f"     [!] Erro em {nome_zip}: {e}")
-        if os.path.exists(caminho_zip): os.remove(caminho_zip)
-        return []
+    os.remove(caminho_zip)
+    return extraidos
 
 def aplicar_mascara_mei(chunk, nome_tabela):
-    # Compilada fora do loop para máxima performance (Erradica CPFs)
-    regex_cpf_sujo = re.compile(r'(?i)[-.\s]*(?:CPF)?[-.\s]*(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)[-.\s]*')
-    
     if nome_tabela == "EMPRESA":
-        razoes_limpas = []
-        for razao, cnpj in zip(chunk['razao_social'], chunk['cnpj_basico']):
-            
-            # --- CORREÇÃO PONTO 1: Tratamento de Nulos ---
-            # pd.isna() pega NaN/None nativos. E checamos strings literais "nan" ou "none"
-            if pd.isna(razao) or str(razao).strip().lower() in ['nan', 'none', '']:
-                razao_str = ""
-            else:
-                razao_str = str(razao).strip()
-            
-            cnpj_str = str(cnpj).zfill(8)
-            cnpj_formatado = f"{cnpj_str[:2]}.{cnpj_str[2:5]}.{cnpj_str[5:]}"
-            
-            # Se for nulo, apenas retorna o CNPJ formatado (Ex: "12.345.678")
-            if not razao_str:
-                razoes_limpas.append(cnpj_formatado)
-                continue
-            
-            # 1. Erradica o CPF da string
-            # Substitui por um espaço para não "grudar" as palavras (ex: MARIA SOUZA)
-            nome_sem_cpf = regex_cpf_sujo.sub(" ", razao_str)
-            # Remove espaços duplos que possam ter sido gerados
-            nome_sem_cpf = re.sub(r'\s+', ' ', nome_sem_cpf).strip()
-            
-            # --- CORREÇÃO PONTO 3: Proteção contra o "Eco" de 8 ou 14 dígitos ---
-            # Regex que busca o CNPJ base (com ou sem pontos) e opcionalmente o /0001-90 no INÍCIO da string
-            padrao_eco = rf'^{cnpj_str[:2]}\.?{cnpj_str[2:5]}\.?{cnpj_str[5:]}(?:/?\d{{4}}-?\d{{2}})?'
-            nome_sem_cpf = re.sub(padrao_eco, '', nome_sem_cpf).strip()
-                
-            # Limpa possíveis hífens, pontos, espaços ou BARRAS (/) isolados no começo
-            nome_sem_cpf = re.sub(r'^[-.\s/]+', '', nome_sem_cpf).strip()
-            
-            # Monta a string final
-            if nome_sem_cpf:
-                razoes_limpas.append(f"{cnpj_formatado} {nome_sem_cpf}")
-            else:
-                razoes_limpas.append(cnpj_formatado)
-            
-        chunk['razao_social'] = razoes_limpas
+        # Máscara vetorial: Processa APENAS as linhas que são MEIs (Micro Empresa + Emp. Individual)
+        mask_mei = (chunk['porte_empresa'] == '01') & (chunk['natureza_juridica'] == '2135')
         
+        if mask_mei.any():
+            razoes_limpas = []
+            subset_mei = chunk[mask_mei]
+            
+            for razao, cnpj in zip(subset_mei['razao_social'], subset_mei['cnpj_basico']):
+                # Proteção contra Nulos silenciosos (Point 1)
+                if pd.isna(razao) or str(razao).strip().lower() in ['nan', 'none', '']:
+                    razao_str = ""
+                else:
+                    razao_str = str(razao).strip()
+                    
+                cnpj_str = str(cnpj).zfill(8)
+                cnpj_formatado = f"{cnpj_str[:2]}.{cnpj_str[2:5]}.{cnpj_str[5:]}"
+                
+                if not razao_str:
+                    razoes_limpas.append(cnpj_formatado)
+                    continue
+                    
+                nome_sem_cpf = REGEX_CPF_SUJO.sub("", razao_str).strip()
+                
+                # Remoção de Eco otimizada (sem regex dinâmico)
+                if nome_sem_cpf.startswith(cnpj_formatado):
+                    nome_sem_cpf = nome_sem_cpf[len(cnpj_formatado):]
+                elif nome_sem_cpf.startswith(cnpj_str):
+                    nome_sem_cpf = nome_sem_cpf[len(cnpj_str):]
+                    
+                # Limpa sufixo /0001-90 indesejado e pontuações do início (Point 3)
+                nome_sem_cpf = REGEX_FILIAL_SUJA.sub('', nome_sem_cpf)
+                nome_sem_cpf = REGEX_LIXO_INICIO.sub('', nome_sem_cpf).strip()
+                
+                if nome_sem_cpf:
+                    razoes_limpas.append(f"{cnpj_formatado} {nome_sem_cpf}")
+                else:
+                    razoes_limpas.append(cnpj_formatado)
+                    
+            # Atualiza no chunk apenas o subconjunto mascarado
+            chunk.loc[mask_mei, 'razao_social'] = razoes_limpas
+
+        # --- CAST DE TIPOS: Prepara o terreno para o Data Lake ---
+        if 'capital_social' in chunk.columns:
+            chunk['capital_social'] = pd.to_numeric(
+                chunk['capital_social'].astype(str).str.replace(',', '.'), 
+                errors='coerce'
+            ).fillna(0.0)
+            
     return chunk
 
 def enviar_para_s3(caminho_local, chave_s3):
@@ -167,36 +182,40 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
     
-    for i in range(quantidade_zips):
-        nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
-        url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
-        ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
-        
-        for ficheiro in ficheiros_csv:
-            chunks = pd.read_csv(ficheiro, sep=';', header=None, names=colunas, 
-                                 encoding='iso-8859-1', chunksize=250_000, dtype=str)
+    try:
+        for i in range(quantidade_zips):
+            nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
+            url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
             
-            nome_base = os.path.basename(ficheiro)
-            for chunk in tqdm(chunks, desc=f"Convertendo {nome_base}", leave=False):
-                chunk = chunk.fillna("")
-                chunk = aplicar_mascara_mei(chunk, nome_tabela)
+            ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
+            
+            for ficheiro in ficheiros_csv:
+                chunks = pd.read_csv(ficheiro, sep=';', header=None, names=colunas, 
+                                     encoding='iso-8859-1', chunksize=250_000, dtype=str)
                 
-                chunk['mes_referencia'] = diretorio_mes
-                chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                nome_base = os.path.basename(ficheiro)
+                for chunk in tqdm(chunks, desc=f"Convertendo {nome_base}", leave=False):
+                    chunk = aplicar_mascara_mei(chunk, nome_tabela)
+                    
+                    chunk['mes_referencia'] = diretorio_mes
+                    chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                tabela_arrow = pa.Table.from_pandas(chunk)
-                
-                if writer is None:
-                    writer = pq.ParquetWriter(caminho_parquet_local, tabela_arrow.schema, compression='snappy')
-                
-                writer.write_table(tabela_arrow)
-                
-            os.remove(ficheiro)
+                    tabela_arrow = pa.Table.from_pandas(chunk)
+                    
+                    if writer is None:
+                        writer = pq.ParquetWriter(caminho_parquet_local, tabela_arrow.schema, compression='snappy')
+                    
+                    writer.write_table(tabela_arrow)
+                    
+                os.remove(ficheiro)
 
-    if writer:
-        writer.close()
+    finally:
+        # Garante que o Parquet fecha corretamente mesmo que falte memória
+        if writer:
+            writer.close()
+            
+    if os.path.exists(caminho_parquet_local):
         chave_s3 = f"{S3_PREFIX}/{nome_tabela.lower()}/mes_referencia={diretorio_mes}/dados.parquet"
-        
         if not local_test:
             enviar_para_s3(caminho_parquet_local, chave_s3)
             os.remove(caminho_parquet_local)
@@ -251,7 +270,6 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
     if not local_test and os.path.exists(PASTA_TEMP):
         shutil.rmtree(PASTA_TEMP)
 
-    # Cálculo de tempo e consumo máximo de RAM (no Linux, ru_maxrss retorna KB)
     tempo_total = time.time() - start_time
     minutos, segundos = divmod(tempo_total, 60)
     ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
