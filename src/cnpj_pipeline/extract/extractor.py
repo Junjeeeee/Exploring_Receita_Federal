@@ -128,7 +128,10 @@ def aplicar_mascara_mei(chunk, nome_tabela):
                 continue
             
             # 1. Erradica o CPF da string
-            nome_sem_cpf = regex_cpf_sujo.sub("", razao_str).strip()
+            # Substitui por um espaço para não "grudar" as palavras (ex: MARIA SOUZA)
+            nome_sem_cpf = regex_cpf_sujo.sub(" ", razao_str)
+            # Remove espaços duplos que possam ter sido gerados
+            nome_sem_cpf = re.sub(r'\s+', ' ', nome_sem_cpf).strip()
             
             # --- CORREÇÃO PONTO 3: Proteção contra o "Eco" de 8 ou 14 dígitos ---
             # Regex que busca o CNPJ base (com ou sem pontos) e opcionalmente o /0001-90 no INÍCIO da string
