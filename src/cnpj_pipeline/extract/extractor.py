@@ -92,7 +92,7 @@ def limpar_checkpoint():
 
 def obter_proximo_mes(mes_atual_str):
     if not mes_atual_str:
-        return "2023-05"
+        return "2024-01"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
@@ -103,10 +103,11 @@ def verificar_disponibilidade_mes(mes_str):
     except requests.RequestException:
         return False
 
+# --- PROTEÇÃO ZIP: Captura também falhas de arquivos corrompidos na origem ---
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(requests.RequestException),
+    retry=retry_if_exception_type((requests.RequestException, zipfile.BadZipFile)),
     reraise=True
 )
 def descarregar_e_extrair(url, nome_zip):
@@ -155,7 +156,9 @@ def aplicar_mascara_mei(chunk, nome_tabela):
                     razoes_limpas.append(cnpj_formatado)
                     continue
                     
-                nome_sem_cpf = REGEX_CPF_SUJO.sub("", razao_str).strip()
+                # Fix: Substitui por um espaço para não grudar palavras, e retira duplo espaçamento
+                nome_sem_cpf = REGEX_CPF_SUJO.sub(" ", razao_str).strip()
+                nome_sem_cpf = re.sub(r'\s+', ' ', nome_sem_cpf)
                 
                 if nome_sem_cpf.startswith(cnpj_formatado):
                     nome_sem_cpf = nome_sem_cpf[len(cnpj_formatado):]
@@ -180,6 +183,18 @@ def aplicar_mascara_mei(chunk, nome_tabela):
             
     return chunk
 
+# --- SCHEMA ARROW DINÂMICO: Blinda contra erros de inferência em chunks ---
+def gerar_schema_arrow(colunas):
+    campos = []
+    for col in colunas:
+        if col == 'capital_social':
+            campos.append((col, pa.float64()))
+        else:
+            campos.append((col, pa.string()))
+    campos.append(('mes_referencia', pa.string()))
+    campos.append(('ingested_at', pa.string()))
+    return pa.schema(campos)
+
 def enviar_para_s3(caminho_local, chave_s3):
     print(f"  -> A enviar para s3://{AWS_BUCKET_NAME}/{chave_s3} ...", end=" ", flush=True)
     s3_client = boto3.client('s3')
@@ -195,7 +210,12 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
     
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
+    schema_arrow_fixo = gerar_schema_arrow(colunas)
     
+    # Prevenção: Remove arquivo residual de execuções anteriores abortadas
+    if os.path.exists(caminho_parquet_local):
+        os.remove(caminho_parquet_local)
+        
     try:
         for i in range(quantidade_zips):
             nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
@@ -213,14 +233,24 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
                     chunk['mes_referencia'] = diretorio_mes
                     chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                    tabela_arrow = pa.Table.from_pandas(chunk)
+                    # Aplica o schema forçado na conversão
+                    tabela_arrow = pa.Table.from_pandas(chunk, schema=schema_arrow_fixo)
                     
                     if writer is None:
-                        writer = pq.ParquetWriter(caminho_parquet_local, tabela_arrow.schema, compression='snappy')
+                        writer = pq.ParquetWriter(caminho_parquet_local, schema_arrow_fixo, compression='snappy')
                     
                     writer.write_table(tabela_arrow)
                     
                 os.remove(ficheiro)
+                
+    except Exception as e:
+        # Se explodir no meio de um arquivo, fecha o writer e apaga o parquet incompleto
+        if writer:
+            writer.close()
+            writer = None
+        if os.path.exists(caminho_parquet_local):
+            os.remove(caminho_parquet_local)
+        raise e
 
     finally:
         if writer:
@@ -230,7 +260,7 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
         chave_s3 = f"{S3_PREFIX}/{nome_tabela.lower()}/mes_referencia={diretorio_mes}/dados.parquet"
         if not local_test:
             enviar_para_s3(caminho_parquet_local, chave_s3)
-            os.remove(caminho_parquet_local)  # Deleta o parquet local garantindo economia de disco!
+            os.remove(caminho_parquet_local)
             salvar_checkpoint(diretorio_mes, nome_tabela)
         else:
             tamanho_mb = os.path.getsize(caminho_parquet_local) / (1024 * 1024)
@@ -282,7 +312,7 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
         if not local_test:
             with open(STATE_FILE, "w") as f:
                 f.write(proximo_mes)
-            limpar_checkpoint()  # Limpa o checkpoint do mês ao finalizar todas as tabelas
+            limpar_checkpoint()
             print(f"\n🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
         else:
             print(f"\n🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado.")
