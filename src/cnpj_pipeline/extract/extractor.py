@@ -92,7 +92,7 @@ def limpar_checkpoint():
 
 def obter_proximo_mes(mes_atual_str):
     if not mes_atual_str:
-        return "2024-01"
+        return "2023-05"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
