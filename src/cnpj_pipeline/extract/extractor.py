@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import zipfile
 import requests
 import shutil
@@ -18,7 +19,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 load_dotenv()
 
-# --- SEGURANÇA: Token oculto ---
 TOKEN_SHARE = os.getenv("TOKEN_SHARE")
 if not TOKEN_SHARE:
     raise ValueError("ERRO FATAL: Variável TOKEN_SHARE não encontrada no ficheiro .env")
@@ -30,8 +30,8 @@ PASTA_TEMP = "tmp_receita"
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 S3_PREFIX = "bronze/receita_federal"
 STATE_FILE = "last_processed_month.txt"
+CHECKPOINT_FILE = "checkpoint_estado.json"
 
-# --- PERFORMANCE: Regex compilada em nível global ---
 REGEX_CPF_SUJO = re.compile(r'(?i)[-.\s]*(?:CPF)?[-.\s]*(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)[-.\s]*')
 REGEX_FILIAL_SUJA = re.compile(r'^/?\d{4}-?\d{2}')
 REGEX_LIXO_INICIO = re.compile(r'^[-.\s/]+')
@@ -68,6 +68,28 @@ SCHEMAS_CNPJ = {
     ]
 }
 
+# --- SISTEMA DE CHECKPOINT ---
+def carregar_checkpoint(mes_referencia):
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE, "r") as f:
+                dados = json.load(f)
+                if dados.get("mes") == mes_referencia:
+                    return set(dados.get("tabelas_concluidas", []))
+        except Exception as e:
+            print(f"⚠️ [Checkpoint] Falha ao ler arquivo de checkpoint: {e}")
+    return set()
+
+def salvar_checkpoint(mes_referencia, tabela):
+    concluidas = carregar_checkpoint(mes_referencia)
+    concluidas.add(tabela)
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump({"mes": mes_referencia, "tabelas_concluidas": list(concluidas)}, f, indent=2)
+
+def limpar_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
+
 def obter_proximo_mes(mes_atual_str):
     if not mes_atual_str:
         return "2024-01"
@@ -78,11 +100,9 @@ def verificar_disponibilidade_mes(mes_str):
     try:
         response = requests.request("PROPFIND", f"{URL_DOWNLOAD_BASE}/{mes_str}/", headers=HEADERS, timeout=30)
         return response.status_code in (200, 207)
-    # Exceção estrita para não engolir erros de sistema operativo (ex: Ctrl+C)
     except requests.RequestException:
         return False
 
-# --- RESILIÊNCIA: Fallback exponencial em caso de falha de rede ---
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -116,7 +136,6 @@ def descarregar_e_extrair(url, nome_zip):
 
 def aplicar_mascara_mei(chunk, nome_tabela):
     if nome_tabela == "EMPRESA":
-        # Máscara vetorial: Processa APENAS as linhas que são MEIs (Micro Empresa + Emp. Individual)
         mask_mei = (chunk['porte_empresa'] == '01') & (chunk['natureza_juridica'] == '2135')
         
         if mask_mei.any():
@@ -124,7 +143,6 @@ def aplicar_mascara_mei(chunk, nome_tabela):
             subset_mei = chunk[mask_mei]
             
             for razao, cnpj in zip(subset_mei['razao_social'], subset_mei['cnpj_basico']):
-                # Proteção contra Nulos silenciosos (Point 1)
                 if pd.isna(razao) or str(razao).strip().lower() in ['nan', 'none', '']:
                     razao_str = ""
                 else:
@@ -139,13 +157,11 @@ def aplicar_mascara_mei(chunk, nome_tabela):
                     
                 nome_sem_cpf = REGEX_CPF_SUJO.sub("", razao_str).strip()
                 
-                # Remoção de Eco otimizada (sem regex dinâmico)
                 if nome_sem_cpf.startswith(cnpj_formatado):
                     nome_sem_cpf = nome_sem_cpf[len(cnpj_formatado):]
                 elif nome_sem_cpf.startswith(cnpj_str):
                     nome_sem_cpf = nome_sem_cpf[len(cnpj_str):]
                     
-                # Limpa sufixo /0001-90 indesejado e pontuações do início (Point 3)
                 nome_sem_cpf = REGEX_FILIAL_SUJA.sub('', nome_sem_cpf)
                 nome_sem_cpf = REGEX_LIXO_INICIO.sub('', nome_sem_cpf).strip()
                 
@@ -154,10 +170,8 @@ def aplicar_mascara_mei(chunk, nome_tabela):
                 else:
                     razoes_limpas.append(cnpj_formatado)
                     
-            # Atualiza no chunk apenas o subconjunto mascarado
             chunk.loc[mask_mei, 'razao_social'] = razoes_limpas
 
-        # --- CAST DE TIPOS: Prepara o terreno para o Data Lake ---
         if 'capital_social' in chunk.columns:
             chunk['capital_social'] = pd.to_numeric(
                 chunk['capital_social'].astype(str).str.replace(',', '.'), 
@@ -196,7 +210,6 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
                 nome_base = os.path.basename(ficheiro)
                 for chunk in tqdm(chunks, desc=f"Convertendo {nome_base}", leave=False):
                     chunk = aplicar_mascara_mei(chunk, nome_tabela)
-                    
                     chunk['mes_referencia'] = diretorio_mes
                     chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -210,7 +223,6 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
                 os.remove(ficheiro)
 
     finally:
-        # Garante que o Parquet fecha corretamente mesmo que falte memória
         if writer:
             writer.close()
             
@@ -218,10 +230,12 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
         chave_s3 = f"{S3_PREFIX}/{nome_tabela.lower()}/mes_referencia={diretorio_mes}/dados.parquet"
         if not local_test:
             enviar_para_s3(caminho_parquet_local, chave_s3)
-            os.remove(caminho_parquet_local)
+            os.remove(caminho_parquet_local)  # Deleta o parquet local garantindo economia de disco!
+            salvar_checkpoint(diretorio_mes, nome_tabela)
         else:
             tamanho_mb = os.path.getsize(caminho_parquet_local) / (1024 * 1024)
             print(f"  [MODO TESTE] Arquivo mantido: {caminho_parquet_local} ({tamanho_mb:.1f} MB)")
+            salvar_checkpoint(diretorio_mes, nome_tabela)
     else:
         print(f"  [AVISO] Nenhum dado extraído para {nome_tabela}.")
 
@@ -243,6 +257,10 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
     if verificar_disponibilidade_mes(proximo_mes):
         print(f"✅ Dados encontrados! A iniciar extração...\n")
         
+        tabelas_concluidas = carregar_checkpoint(proximo_mes)
+        if tabelas_concluidas:
+            print(f"📌 Checkpoint detectado: {len(tabelas_concluidas)} tabelas já processadas ({', '.join(tabelas_concluidas)}). Pulando-as...\n")
+        
         tabelas_config = [
             ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"], 10),
             ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"], 10),
@@ -256,11 +274,15 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
         ]
         
         for nome_tabela, prefixo, schema, qtde in tabelas_config:
+            if nome_tabela in tabelas_concluidas:
+                print(f"⏭️  Pulando {nome_tabela} (já concluída pelo checkpoint).")
+                continue
             processar_tabela(proximo_mes, nome_tabela, prefixo, schema, qtde, local_test)
             
         if not local_test:
             with open(STATE_FILE, "w") as f:
                 f.write(proximo_mes)
+            limpar_checkpoint()  # Limpa o checkpoint do mês ao finalizar todas as tabelas
             print(f"\n🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
         else:
             print(f"\n🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado.")
