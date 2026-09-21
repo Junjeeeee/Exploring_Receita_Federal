@@ -5,12 +5,15 @@ import requests
 import shutil
 import boto3
 import argparse
+import time
+import resource
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -23,7 +26,6 @@ AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 S3_PREFIX = "bronze/receita_federal"
 STATE_FILE = "last_processed_month.txt"
 
-# Schemas atualizados com as tabelas de domínio
 SCHEMAS_CNPJ = {
     "EMPRESA": [
         "cnpj_basico", "razao_social", "natureza_juridica",
@@ -58,7 +60,7 @@ SCHEMAS_CNPJ = {
 
 def obter_proximo_mes(mes_atual_str):
     if not mes_atual_str:
-        return "2024-01"
+        return "2023-05"
     atual = datetime.strptime(mes_atual_str, "%Y-%m")
     return (atual + relativedelta(months=1)).strftime("%Y-%m")
 
@@ -73,10 +75,21 @@ def descarregar_e_extrair(url, nome_zip):
     caminho_zip = os.path.join(PASTA_TEMP, nome_zip)
     try:
         with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
-            r.raise_for_status() 
-            with open(caminho_zip, 'wb') as f:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            
+            with open(caminho_zip, 'wb') as f, tqdm(
+                desc=nome_zip,
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+                leave=False
+            ) as bar:
                 for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
-                    if chunk: f.write(chunk)
+                    if chunk:
+                        size = f.write(chunk)
+                        bar.update(size)
                         
         extraidos = []
         with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
@@ -92,42 +105,76 @@ def descarregar_e_extrair(url, nome_zip):
         return []
 
 def aplicar_mascara_mei(chunk, nome_tabela):
-    regex_cpf = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
+    # Compilada fora do loop para máxima performance (Erradica CPFs)
+    regex_cpf_sujo = re.compile(r'(?i)[-.\s]*(?:CPF)?[-.\s]*(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)[-.\s]*')
+    
     if nome_tabela == "EMPRESA":
-        chunk['razao_social'] = [
-            regex_cpf.sub(str(cnpj), str(razao)) 
-            for razao, cnpj in zip(chunk['razao_social'], chunk['cnpj_basico'])
-        ]
+        razoes_limpas = []
+        for razao, cnpj in zip(chunk['razao_social'], chunk['cnpj_basico']):
+            
+            # --- CORREÇÃO PONTO 1: Tratamento de Nulos ---
+            # pd.isna() pega NaN/None nativos. E checamos strings literais "nan" ou "none"
+            if pd.isna(razao) or str(razao).strip().lower() in ['nan', 'none', '']:
+                razao_str = ""
+            else:
+                razao_str = str(razao).strip()
+            
+            cnpj_str = str(cnpj).zfill(8)
+            cnpj_formatado = f"{cnpj_str[:2]}.{cnpj_str[2:5]}.{cnpj_str[5:]}"
+            
+            # Se for nulo, apenas retorna o CNPJ formatado (Ex: "12.345.678")
+            if not razao_str:
+                razoes_limpas.append(cnpj_formatado)
+                continue
+            
+            # 1. Erradica o CPF da string
+            nome_sem_cpf = regex_cpf_sujo.sub("", razao_str).strip()
+            
+            # --- CORREÇÃO PONTO 3: Proteção contra o "Eco" de 8 ou 14 dígitos ---
+            # Regex que busca o CNPJ base (com ou sem pontos) e opcionalmente o /0001-90 no INÍCIO da string
+            padrao_eco = rf'^{cnpj_str[:2]}\.?{cnpj_str[2:5]}\.?{cnpj_str[5:]}(?:/?\d{{4}}-?\d{{2}})?'
+            nome_sem_cpf = re.sub(padrao_eco, '', nome_sem_cpf).strip()
+                
+            # Limpa possíveis hífens, pontos, espaços ou BARRAS (/) isolados no começo
+            nome_sem_cpf = re.sub(r'^[-.\s/]+', '', nome_sem_cpf).strip()
+            
+            # Monta a string final
+            if nome_sem_cpf:
+                razoes_limpas.append(f"{cnpj_formatado} {nome_sem_cpf}")
+            else:
+                razoes_limpas.append(cnpj_formatado)
+            
+        chunk['razao_social'] = razoes_limpas
+        
     return chunk
 
 def enviar_para_s3(caminho_local, chave_s3):
-    print(f"  -> A enviar {caminho_local} para s3://{AWS_BUCKET_NAME}/{chave_s3} ...")
+    print(f"  -> A enviar para s3://{AWS_BUCKET_NAME}/{chave_s3} ...", end=" ", flush=True)
     s3_client = boto3.client('s3')
     try:
         s3_client.upload_file(caminho_local, AWS_BUCKET_NAME, chave_s3)
-        print("     Upload concluído com sucesso!")
+        print("✅ Concluído!")
     except Exception as e:
-        print(f"     [!] Falha no upload para o S3: {e}")
+        print(f"\n     [!] Falha no upload para o S3: {e}")
         raise e
 
 def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidade_zips=10, local_test=False):
-    print(f"\n--- A processar Tabela {nome_tabela} ({diretorio_mes}) ---")
+    print(f"\n--- Processando Tabela {nome_tabela} ---")
     
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
     
     for i in range(quantidade_zips):
-        # Correção aplicada: Se for 1 arquivo único (Simples ou Domínios), não usa índice numérico no final.
         nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
-        
         url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
         ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
         
         for ficheiro in ficheiros_csv:
             chunks = pd.read_csv(ficheiro, sep=';', header=None, names=colunas, 
-                                 encoding='iso-8859-1', chunksize=100_000, dtype=str)
+                                 encoding='iso-8859-1', chunksize=250_000, dtype=str)
             
-            for chunk in chunks:
+            nome_base = os.path.basename(ficheiro)
+            for chunk in tqdm(chunks, desc=f"Convertendo {nome_base}", leave=False):
                 chunk = chunk.fillna("")
                 chunk = aplicar_mascara_mei(chunk, nome_tabela)
                 
@@ -151,11 +198,13 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
             enviar_para_s3(caminho_parquet_local, chave_s3)
             os.remove(caminho_parquet_local)
         else:
-            print(f"  [MODO TESTE] Upload para S3 cancelado. Arquivo mantido em: {caminho_parquet_local}")
+            tamanho_mb = os.path.getsize(caminho_parquet_local) / (1024 * 1024)
+            print(f"  [MODO TESTE] Arquivo mantido: {caminho_parquet_local} ({tamanho_mb:.1f} MB)")
     else:
         print(f"  [AVISO] Nenhum dado extraído para {nome_tabela}.")
 
 def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
+    start_time = time.time()
     os.makedirs(PASTA_TEMP, exist_ok=True)
     
     if test_month:
@@ -170,9 +219,8 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
         print(f"A verificar novos dados para: {proximo_mes}...")
 
     if verificar_disponibilidade_mes(proximo_mes):
-        print(f"✅ Dados encontrados! A iniciar extração...")
+        print(f"✅ Dados encontrados! A iniciar extração...\n")
         
-        # Inclusão das 5 tabelas de domínio do documento
         tabelas_config = [
             ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"], 10),
             ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"], 10),
@@ -191,20 +239,29 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
         if not local_test:
             with open(STATE_FILE, "w") as f:
                 f.write(proximo_mes)
-            print(f"🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
+            print(f"\n🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
         else:
-            print(f"🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado na máquina local.")
+            print(f"\n🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado.")
     else:
         print("⏳ Dados ainda não disponíveis.")
 
     if not local_test and os.path.exists(PASTA_TEMP):
         shutil.rmtree(PASTA_TEMP)
 
+    # Cálculo de tempo e consumo máximo de RAM (no Linux, ru_maxrss retorna KB)
+    tempo_total = time.time() - start_time
+    minutos, segundos = divmod(tempo_total, 60)
+    ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    
+    print("\n" + "="*50)
+    print(f"⏱️  Tempo total de execução : {int(minutos)}m {int(segundos)}s")
+    print(f"💾 Pico de RAM utilizada    : {ram_mb:.2f} MB")
+    print("="*50)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extrator de Dados da Receita Federal para S3")
-    parser.add_argument("--local-test", action="store_true", help="Executa sem enviar para o S3 e sem apagar os Parquets locais.")
+    parser.add_argument("--local-test", action="store_true", help="Executa sem enviar para S3 e mantém parquets locais.")
     parser.add_argument("--month", type=str, help="Força a execução de um mês específico (ex: 2024-01).")
     
     args = parser.parse_args()
-    
     executar_pipeline_local_para_nuvem(local_test=args.local_test, test_month=args.month)
