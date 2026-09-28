@@ -8,6 +8,7 @@ import boto3
 import argparse
 import time
 import resource
+import urllib.parse
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -28,7 +29,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
 
 PASTA_TEMP = "tmp_receita"
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
-S3_PREFIX = "bronze/receita_federal"
+S3_PREFIX = "landing/receita_federal"
 STATE_FILE = "last_processed_month.txt"
 CHECKPOINT_FILE = "checkpoint_estado.json"
 
@@ -103,7 +104,24 @@ def verificar_disponibilidade_mes(mes_str):
     except requests.RequestException:
         return False
 
-# --- PROTEÇÃO ZIP: Captura também falhas de arquivos corrompidos na origem ---
+# --- MAPEAMENTO DINÂMICO DE ARQUIVOS WEBDAV ---
+def listar_arquivos_do_mes(diretorio_mes):
+    """Consulta o servidor para retornar os nomes reais dos arquivos no diretório."""
+    url_dir = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/"
+    headers_propfind = HEADERS.copy()
+    headers_propfind["Depth"] = "1"
+    
+    try:
+        res = requests.request("PROPFIND", url_dir, headers=headers_propfind, timeout=30)
+        if res.status_code in (200, 207):
+            padrao = r'/([^/]+\.zip)'
+            nomes = re.findall(padrao, urllib.parse.unquote(res.text))
+            return list(set(nomes))
+    except Exception:
+        pass
+    return []
+
+# --- PROTEÇÃO ZIP E DOWNLOAD ---
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -114,7 +132,14 @@ def descarregar_e_extrair(url, nome_zip):
     caminho_zip = os.path.join(PASTA_TEMP, nome_zip)
     
     with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as r:
+        if r.status_code == 404:
+            raise requests.exceptions.HTTPError(f"404 Not Found: {url}")
         r.raise_for_status()
+        
+        content_type = r.headers.get('Content-Type', '')
+        if 'text/html' in content_type:
+            raise zipfile.BadZipFile(f"Falso ZIP detectado (HTML retornado): {url}")
+            
         total_size = int(r.headers.get('content-length', 0))
         
         with open(caminho_zip, 'wb') as f, tqdm(
@@ -127,12 +152,18 @@ def descarregar_e_extrair(url, nome_zip):
                     bar.update(size)
                     
     extraidos = []
-    with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
-        zip_ref.extractall(PASTA_TEMP)
-        for nome_interno in zip_ref.namelist():
-            extraidos.append(os.path.join(PASTA_TEMP, nome_interno))
+    try:
+        with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
+            zip_ref.extractall(PASTA_TEMP)
+            for nome_interno in zip_ref.namelist():
+                extraidos.append(os.path.join(PASTA_TEMP, nome_interno))
+    except zipfile.BadZipFile as e:
+        if os.path.exists(caminho_zip):
+            os.remove(caminho_zip)
+        raise e
             
-    os.remove(caminho_zip)
+    if os.path.exists(caminho_zip):
+        os.remove(caminho_zip)
     return extraidos
 
 def aplicar_mascara_mei(chunk, nome_tabela):
@@ -156,7 +187,6 @@ def aplicar_mascara_mei(chunk, nome_tabela):
                     razoes_limpas.append(cnpj_formatado)
                     continue
                     
-                # Fix: Substitui por um espaço para não grudar palavras, e retira duplo espaçamento
                 nome_sem_cpf = REGEX_CPF_SUJO.sub(" ", razao_str).strip()
                 nome_sem_cpf = re.sub(r'\s+', ' ', nome_sem_cpf)
                 
@@ -183,7 +213,6 @@ def aplicar_mascara_mei(chunk, nome_tabela):
             
     return chunk
 
-# --- SCHEMA ARROW DINÂMICO: Blinda contra erros de inferência em chunks ---
 def gerar_schema_arrow(colunas):
     campos = []
     for col in colunas:
@@ -205,24 +234,38 @@ def enviar_para_s3(caminho_local, chave_s3):
         print(f"\n     [!] Falha no upload para o S3: {e}")
         raise e
 
-def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidade_zips=10, local_test=False):
+def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, local_test=False):
     print(f"\n--- Processando Tabela {nome_tabela} ---")
     
     caminho_parquet_local = os.path.join(PASTA_TEMP, f"{nome_tabela.lower()}_{diretorio_mes}.parquet")
     writer = None
     schema_arrow_fixo = gerar_schema_arrow(colunas)
     
-    # Prevenção: Remove arquivo residual de execuções anteriores abortadas
     if os.path.exists(caminho_parquet_local):
         os.remove(caminho_parquet_local)
         
+    arquivos_disponiveis = listar_arquivos_do_mes(diretorio_mes)
+    arquivos_tabela = [arq for arq in arquivos_disponiveis if arq.startswith(prefixo_zip) and arq.endswith('.zip')]
+    arquivos_tabela.sort()
+    
+    if not arquivos_tabela:
+        print(f"  [AVISO] Nenhum arquivo encontrado para a tabela {nome_tabela} (prefixo '{prefixo_zip}').")
+        return
+        
     try:
-        for i in range(quantidade_zips):
-            nome_arquivo = f"{prefixo_zip}.zip" if quantidade_zips == 1 else f"{prefixo_zip}{i}.zip"
+        for nome_arquivo in arquivos_tabela:
             url = f"{URL_DOWNLOAD_BASE}/{diretorio_mes}/{nome_arquivo}"
             
-            ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
-            
+            try:
+                ficheiros_csv = descarregar_e_extrair(url, nome_arquivo)
+            except zipfile.BadZipFile:
+                print(f"\n  [!] ALERTA: Arquivo corrompido na origem ({nome_arquivo}). Ignorando pacotes fantasmas...")
+                continue
+            except requests.exceptions.HTTPError as e:
+                if "404" in str(e):
+                    continue
+                raise e
+                
             for ficheiro in ficheiros_csv:
                 chunks = pd.read_csv(ficheiro, sep=';', header=None, names=colunas, 
                                      encoding='iso-8859-1', chunksize=250_000, dtype=str)
@@ -233,7 +276,6 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
                     chunk['mes_referencia'] = diretorio_mes
                     chunk['ingested_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                    # Aplica o schema forçado na conversão
                     tabela_arrow = pa.Table.from_pandas(chunk, schema=schema_arrow_fixo)
                     
                     if writer is None:
@@ -244,7 +286,6 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, quantidad
                 os.remove(ficheiro)
                 
     except Exception as e:
-        # Se explodir no meio de um arquivo, fecha o writer e apaga o parquet incompleto
         if writer:
             writer.close()
             writer = None
@@ -292,22 +333,22 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
             print(f"📌 Checkpoint detectado: {len(tabelas_concluidas)} tabelas já processadas ({', '.join(tabelas_concluidas)}). Pulando-as...\n")
         
         tabelas_config = [
-            ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"], 10),
-            ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"], 10),
-            ("SOCIO", "Socios", SCHEMAS_CNPJ["SOCIO"], 10),
-            ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"], 1),
-            ("MUNICIPIOS", "Municipios", SCHEMAS_CNPJ["DOMINIO"], 1),
-            ("PAISES", "Paises", SCHEMAS_CNPJ["DOMINIO"], 1),
-            ("CNAES", "Cnaes", SCHEMAS_CNPJ["DOMINIO"], 1),
-            ("NATUREZAS", "Naturezas", SCHEMAS_CNPJ["DOMINIO"], 1),
-            ("QUALIFICACOES", "Qualificacoes", SCHEMAS_CNPJ["DOMINIO"], 1)
+            ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"]),
+            ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"]),
+            ("SOCIO", "Socios", SCHEMAS_CNPJ["SOCIO"]),
+            ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"]),
+            ("MUNICIPIOS", "Municipios", SCHEMAS_CNPJ["DOMINIO"]),
+            ("PAISES", "Paises", SCHEMAS_CNPJ["DOMINIO"]),
+            ("CNAES", "Cnaes", SCHEMAS_CNPJ["DOMINIO"]),
+            ("NATUREZAS", "Naturezas", SCHEMAS_CNPJ["DOMINIO"]),
+            ("QUALIFICACOES", "Qualificacoes", SCHEMAS_CNPJ["DOMINIO"])
         ]
         
-        for nome_tabela, prefixo, schema, qtde in tabelas_config:
+        for nome_tabela, prefixo, schema in tabelas_config:
             if nome_tabela in tabelas_concluidas:
                 print(f"⏭️  Pulando {nome_tabela} (já concluída pelo checkpoint).")
                 continue
-            processar_tabela(proximo_mes, nome_tabela, prefixo, schema, qtde, local_test)
+            processar_tabela(proximo_mes, nome_tabela, prefixo, schema, local_test)
             
         if not local_test:
             with open(STATE_FILE, "w") as f:
