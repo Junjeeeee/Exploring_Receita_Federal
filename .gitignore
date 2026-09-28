@@ -4,6 +4,8 @@ data/
 *.zip
 *.parquet
 *.delta/
+last_processed_month.txt
+checkpoint_estado.json
 
 # Python e Ambientes Virtuais
 __pycache__/
