@@ -310,55 +310,72 @@ def processar_tabela(diretorio_mes, nome_tabela, prefixo_zip, colunas, local_tes
     else:
         print(f"  [AVISO] Nenhum dado extraído para {nome_tabela}.")
 
-def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
+def executar_pipeline_local_para_nuvem(local_test=False, test_month=None, only_table=None):
     start_time = time.time()
     os.makedirs(PASTA_TEMP, exist_ok=True)
     
-    if test_month:
-        proximo_mes = test_month
-        print(f"Atenção: Forçando execução para o mês {proximo_mes}")
-    else:
-        ultimo_mes = None
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r") as f:
-                ultimo_mes = f.read().strip()
-        proximo_mes = obter_proximo_mes(ultimo_mes)
-        print(f"A verificar novos dados para: {proximo_mes}...")
+    ultimo_mes = None
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            ultimo_mes = f.read().strip()
 
-    if verificar_disponibilidade_mes(proximo_mes):
-        print(f"✅ Dados encontrados! A iniciar extração...\n")
-        
-        tabelas_concluidas = carregar_checkpoint(proximo_mes)
-        if tabelas_concluidas:
-            print(f"📌 Checkpoint detectado: {len(tabelas_concluidas)} tabelas já processadas ({', '.join(tabelas_concluidas)}). Pulando-as...\n")
-        
-        tabelas_config = [
-            ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"]),
-            ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"]),
-            ("SOCIO", "Socios", SCHEMAS_CNPJ["SOCIO"]),
-            ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"]),
-            ("MUNICIPIOS", "Municipios", SCHEMAS_CNPJ["DOMINIO"]),
-            ("PAISES", "Paises", SCHEMAS_CNPJ["DOMINIO"]),
-            ("CNAES", "Cnaes", SCHEMAS_CNPJ["DOMINIO"]),
-            ("NATUREZAS", "Naturezas", SCHEMAS_CNPJ["DOMINIO"]),
-            ("QUALIFICACOES", "Qualificacoes", SCHEMAS_CNPJ["DOMINIO"])
-        ]
-        
-        for nome_tabela, prefixo, schema in tabelas_config:
-            if nome_tabela in tabelas_concluidas:
-                print(f"⏭️  Pulando {nome_tabela} (já concluída pelo checkpoint).")
-                continue
-            processar_tabela(proximo_mes, nome_tabela, prefixo, schema, local_test)
-            
-        if not local_test:
-            with open(STATE_FILE, "w") as f:
-                f.write(proximo_mes)
-            limpar_checkpoint()
-            print(f"\n🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
-        else:
-            print(f"\n🎉 [MODO TESTE] Processamento de {proximo_mes} finalizado.")
+    # Suporta passar vários meses no backfill (ex: "2023-05,2023-06,2023-07,2023-08")
+    if test_month:
+        meses_alvo = [m.strip() for m in test_month.split(",")]
+        print(f"🎯 Atenção: Forçando execução para o(s) mês(es): {meses_alvo}")
     else:
-        print("⏳ Dados ainda não disponíveis.")
+        meses_alvo = [obter_proximo_mes(ultimo_mes)]
+        print(f"🔍 A verificar novos dados para: {meses_alvo[0]}...")
+
+    tabelas_config = [
+        ("ESTABELE", "Estabelecimentos", SCHEMAS_CNPJ["ESTABELE"]),
+        ("EMPRESA", "Empresas", SCHEMAS_CNPJ["EMPRESA"]),
+        ("SOCIO", "Socios", SCHEMAS_CNPJ["SOCIO"]),
+        ("SIMPLES", "Simples", SCHEMAS_CNPJ["SIMPLES"]),
+        ("MUNICIPIOS", "Municipios", SCHEMAS_CNPJ["DOMINIO"]),
+        ("PAISES", "Paises", SCHEMAS_CNPJ["DOMINIO"]),
+        ("CNAES", "Cnaes", SCHEMAS_CNPJ["DOMINIO"]),
+        ("NATUREZAS", "Naturezas", SCHEMAS_CNPJ["DOMINIO"]),
+        ("QUALIFICACOES", "Qualificacoes", SCHEMAS_CNPJ["DOMINIO"]),
+        ("MOTIVOS", "Motivos", SCHEMAS_CNPJ["DOMINIO"])  # <-- TABELA ADICIONADA AQUI
+    ]
+
+    # Se o parâmetro --only-table for usado, filtra apenas a tabela desejada
+    if only_table:
+        tabelas_config = [t for t in tabelas_config if t[0].upper() == only_table.upper()]
+        if not tabelas_config:
+            raise ValueError(f"Tabela '{only_table}' não existe na configuração.")
+        print(f"⚡ Modo Cirúrgico Ativado: Processando APENAS a tabela {only_table.upper()}")
+
+    for proximo_mes in meses_alvo:
+        print(f"\n==================== MÊS: {proximo_mes} ====================")
+        if verificar_disponibilidade_mes(proximo_mes):
+            print(f"✅ Dados encontrados! A iniciar extração...")
+            
+            # Só usa checkpoint se for a execução normal (todas as tabelas)
+            tabelas_concluidas = carregar_checkpoint(proximo_mes) if not only_table else set()
+            if tabelas_concluidas:
+                print(f"📌 Checkpoint detectado: {len(tabelas_concluidas)} tabelas já processadas. Pulando-as...")
+            
+            for nome_tabela, prefixo, schema in tabelas_config:
+                if nome_tabela in tabelas_concluidas:
+                    print(f"⏭️  Pulando {nome_tabela} (já concluída pelo checkpoint).")
+                    continue
+                processar_tabela(proximo_mes, nome_tabela, prefixo, schema, local_test)
+                
+            # Proteção de Estado: Só atualiza o last_processed_month.txt se NÃO for backfill de 1 tabela
+            # e se o mês processado for mais recente que o último salvo
+            if not local_test and not only_table:
+                if not ultimo_mes or proximo_mes > ultimo_mes:
+                    with open(STATE_FILE, "w") as f:
+                        f.write(proximo_mes)
+                    ultimo_mes = proximo_mes
+                limpar_checkpoint()
+                print(f"\n🎉 Mês {proximo_mes} totalmente enviado para o Data Lake S3.")
+            else:
+                print(f"\n🎉 Extração cirúrgica de {proximo_mes} finalizada com sucesso.")
+        else:
+            print(f"⏳ Dados de {proximo_mes} ainda não disponíveis.")
 
     if not local_test and os.path.exists(PASTA_TEMP):
         shutil.rmtree(PASTA_TEMP)
@@ -375,7 +392,12 @@ def executar_pipeline_local_para_nuvem(local_test=False, test_month=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extrator de Dados da Receita Federal para S3")
     parser.add_argument("--local-test", action="store_true", help="Executa sem enviar para S3 e mantém parquets locais.")
-    parser.add_argument("--month", type=str, help="Força a execução de um mês específico (ex: 2024-01).")
+    parser.add_argument("--month", type=str, help="Mês ou lista de meses separados por vírgula (ex: 2023-05,2023-06).")
+    parser.add_argument("--only-table", type=str, help="Executa apenas uma tabela específica (ex: MOTIVOS) sem alterar o state file.")
     
     args = parser.parse_args()
-    executar_pipeline_local_para_nuvem(local_test=args.local_test, test_month=args.month)
+    executar_pipeline_local_para_nuvem(
+        local_test=args.local_test, 
+        test_month=args.month, 
+        only_table=args.only_table
+    )
