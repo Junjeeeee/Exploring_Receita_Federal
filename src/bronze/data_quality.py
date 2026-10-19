@@ -5,8 +5,9 @@ from pyspark.sql.utils import AnalysisException
 CONTRATOS_SCHEMA = {
     "empresas": ["cnpj_basico", "razao_social", "natureza_juridica", "capital_social"],
     "estabelecimentos": ["cnpj_basico", "cnpj_ordem", "cnpj_dv", "situacao_cadastral", "cnae_fiscal_principal"],
-    "socios": ["cnpj_basico", "identificador_socio", "nome_socio_razao_social"]
-    # ... adicione as restantes conforme a sua documentação
+    "socios": ["cnpj_basico", "identificador_socio", "nome_socio_razao_social"],
+    "motivos_situacao": ["codigo", "descricao"],
+    "cnaes_ibge": ["codigo", "descricao", "secao", "nome_secao", "divisao", "nome_divisao", "grupo", "nome_grupo", "classe", "nome_classe"]
 }
 
 def validar_schema(df, nome_tabela_uc):
