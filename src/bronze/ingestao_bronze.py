@@ -6,7 +6,8 @@ from src.bronze.data_quality import validar_schema, validar_volumetria
 TABELAS_BRONZE = {
     "empresas": "empresa", "estabelecimentos": "estabele", "dados_simples": "simples",
     "socios": "socio", "paises": "paises", "municipios": "municipios",
-    "qualificacoes_socios": "qualificacoes", "naturezas_juridicas": "naturezas", "cnaes": "cnaes"
+    "qualificacoes_socios": "qualificacoes", "naturezas_juridicas": "naturezas", 
+    "cnaes": "cnaes", "motivos_situacao": "motivos", "cnaes_ibge": "cnaes_ibge"
 }
 
 CHAVES_PRIMARIAS = {
@@ -15,10 +16,10 @@ CHAVES_PRIMARIAS = {
     "dados_simples": ["cnpj_basico"],
     "socios": [],
     "paises": ["codigo"], "municipios": ["codigo"], "qualificacoes_socios": ["codigo"],
-    "naturezas_juridicas": ["codigo"], "cnaes": ["codigo"]
+    "naturezas_juridicas": ["codigo"], "cnaes": ["codigo"],
+    "motivos_situacao": ["codigo"], "cnaes_ibge": ["codigo"]
 }
 
-# Dicionários COMPLETOS de Documentação para o Unity Catalog
 DESCRICAO_TABELAS = {
     "empresas": "Camada Bronze: Dados cadastrais da raiz do CNPJ (Empresa), incluindo razão social, capital social e porte.",
     "estabelecimentos": "Camada Bronze: Dados das filiais/matrizes (Estabelecimentos), contendo morada, contactos e situação cadastral detalhada.",
@@ -28,31 +29,34 @@ DESCRICAO_TABELAS = {
     "municipios": "Camada Bronze: Tabela de domínio com os códigos e descrições dos municípios padrão Receita Federal.",
     "qualificacoes_socios": "Camada Bronze: Tabela de domínio com os códigos e descrições dos papéis/qualificações dos sócios e representantes.",
     "naturezas_juridicas": "Camada Bronze: Tabela de domínio com os códigos e descrições das naturezas jurídicas corporativas.",
-    "cnaes": "Camada Bronze: Tabela de domínio com os códigos e descrições da Classificação Nacional de Atividades Econômicas (CNAE)."
+    "cnaes": "Camada Bronze: Tabela de domínio com os códigos e descrições da Classificação Nacional de Atividades Econômicas (CNAE).",
+    "motivos_situacao": "Camada Bronze: Tabela de domínio com os códigos e descrições dos motivos da situação cadastral.",
+    "cnaes_ibge": "Camada Bronze: Hierarquia oficial da CNAE extraída do IBGE (Seção, Divisão, Grupo, Classe e Subclasse)."
 }
 
 DESCRICAO_COLUNAS = {
-    # Metadados Arquiteturais
     "change_hash": "Metadado: Hash MD5 de todas as colunas brutas para deteção rigorosa de mutação (Change Data Capture).",
     "pk": "Metadado: Chave primária lógica gerada pela concatenação dinâmica da granularidade da tabela.",
     "mes_referencia": "Metadado: Mês e ano de referência do snapshot extraído da Receita Federal (Partição).",
     "inserted_at": "Metadado: Timestamp de ingestão inicial do registo na camada Bronze.",
     "updated_at": "Metadado: Timestamp da última atualização ou reprocessamento do registo na camada Bronze.",
-    
-    # Colunas de Domínio Comum
     "codigo": "Código identificador único do domínio (PK).",
     "descricao": "Descrição textual detalhada do domínio.",
+    "secao": "Código da Seção (Grande Área de Atividade) na hierarquia CNAE IBGE.",
+    "nome_secao": "Nome da Seção (Grande Área de Atividade) na hierarquia CNAE IBGE.",
+    "divisao": "Código da Divisão na hierarquia CNAE IBGE.",
+    "nome_divisao": "Nome da Divisão na hierarquia CNAE IBGE.",
+    "grupo": "Código do Grupo na hierarquia CNAE IBGE.",
+    "nome_grupo": "Nome do Grupo na hierarquia CNAE IBGE.",
+    "classe": "Código da Classe na hierarquia CNAE IBGE.",
+    "nome_classe": "Nome da Classe na hierarquia CNAE IBGE.",
     "cnpj_basico": "Radical do CNPJ (primeiros 8 dígitos) que identifica a raiz corporativa da entidade.",
-    
-    # Empresas
     "razao_social": "Nome empresarial oficial (Razão Social) registado na Receita Federal.",
     "natureza_juridica": "Código da natureza jurídica (ex: Sociedade Limitada, S.A.).",
     "qualificacao_responsavel": "Código da qualificação da pessoa física responsável pela empresa.",
     "capital_social": "Valor do capital social da empresa registado em Reais (BRL).",
     "porte_empresa": "Código indicativo do porte da empresa (ex: ME, EPP, Demais).",
     "ente_federativo_responsavel": "Órgão público responsável, preenchido para entes federativos.",
-    
-    # Estabelecimentos
     "cnpj_ordem": "Número de ordem do estabelecimento (geralmente 0001 para matrizes e sequencial para filiais).",
     "cnpj_dv": "Dígitos verificadores do CNPJ (últimos 2 dígitos).",
     "identificador_matriz_filial": "Código indicador: 1 para Matriz, 2 para Filial.",
@@ -82,16 +86,12 @@ DESCRICAO_COLUNAS = {
     "correio_eletronico": "Endereço de e-mail institucional para contacto.",
     "situacao_especial": "Descrição de situações especiais (ex: Concordata, Recuperação Judicial).",
     "data_situacao_especial": "Data em que a situação especial foi estabelecida (AAAAMMDD).",
-    
-    # Dados Simples
     "opcao_pelo_simples": "Flag de adesão ao regime tributário do Simples Nacional (S/N).",
     "data_opcao_simples": "Data oficial de adesão ao Simples Nacional (AAAAMMDD).",
     "data_exclusao_simples": "Data oficial de exclusão do Simples Nacional, se aplicável (AAAAMMDD).",
     "opcao_pelo_mei": "Flag de adesão ao regime tributário de Microempreendedor Individual - MEI (S/N).",
     "data_opcao_mei": "Data oficial de adesão ao MEI (AAAAMMDD).",
     "data_exclusao_mei": "Data oficial de exclusão do MEI, se aplicável (AAAAMMDD).",
-    
-    # Socios
     "identificador_socio": "Código identificador do tipo de sócio (1=PJ, 2=PF, 3=Estrangeiro).",
     "nome_socio_razao_social": "Nome civil do sócio pessoa física ou Razão Social do sócio pessoa jurídica.",
     "cnpj_cpf_socio": "Documento de identificação do sócio (CPF ou CNPJ).",
@@ -108,11 +108,9 @@ def configurar_ambiente_unity_catalog(spark: SparkSession):
     spark.sql("CREATE SCHEMA IF NOT EXISTS tcc_receita.bronze")
 
 def aplicar_comentarios_uc(spark: SparkSession, nome_completo_tabela: str, nome_tabela_uc: str, colunas_existentes: List[str]):
-    """Aplica descrições de tabela e colunas no Unity Catalog."""
     if nome_tabela_uc in DESCRICAO_TABELAS:
         comentario_tab = DESCRICAO_TABELAS[nome_tabela_uc].replace("'", "''")
         spark.sql(f"COMMENT ON TABLE {nome_completo_tabela} IS '{comentario_tab}'")
-    
     for col in colunas_existentes:
         if col in DESCRICAO_COLUNAS:
             comentario_col = DESCRICAO_COLUNAS[col].replace("'", "''")
@@ -121,7 +119,6 @@ def aplicar_comentarios_uc(spark: SparkSession, nome_completo_tabela: str, nome_
 def ingerir_tabela_bronze(spark: SparkSession, nome_tabela_uc: str, pasta_s3: str, mes_referencia: str):
     caminho_landing = f"s3://lakehouse-receita/landing/receita_federal/{pasta_s3}/mes_referencia={mes_referencia}/"
     nome_completo_tabela = f"tcc_receita.bronze.{nome_tabela_uc}"
-    
     print(f"🔄 Processando {nome_tabela_uc} (Mês: {mes_referencia})...")
     
     try:
@@ -129,36 +126,24 @@ def ingerir_tabela_bronze(spark: SparkSession, nome_tabela_uc: str, pasta_s3: st
         validar_schema(df_raw, nome_tabela_uc)
         validar_volumetria(spark, df_raw, nome_tabela_uc, mes_referencia, threshold_queda=0.15)
         
-        # 1. Criação do change_hash
         colunas_raw = df_raw.columns
         expr_hash = F.md5(F.concat_ws("||", *[F.coalesce(F.col(c).cast("string"), F.lit("")) for c in colunas_raw]))
         df_transformado = df_raw.withColumn("change_hash", expr_hash)
         
-        # 2. Criação da Primary Key (PK) Dinâmica e Condicional
         if nome_tabela_uc == "socios":
-            # Regra Específica para Sócios (PJ vs PF/Estrangeiro)
             expr_pk = F.when(
                 F.col("identificador_socio") == "1",
-                F.concat_ws("-", 
-                    F.coalesce(F.col("cnpj_basico").cast("string"), F.lit("NA")), 
-                    F.coalesce(F.col("cnpj_cpf_socio").cast("string"), F.lit("NA"))
-                )
+                F.concat_ws("-", F.coalesce(F.col("cnpj_basico").cast("string"), F.lit("NA")), F.coalesce(F.col("cnpj_cpf_socio").cast("string"), F.lit("NA")))
             ).otherwise(
-                F.concat_ws("-", 
-                    F.coalesce(F.col("cnpj_basico").cast("string"), F.lit("NA")), 
-                    F.coalesce(F.col("cnpj_cpf_socio").cast("string"), F.lit("NA")),
-                    F.coalesce(F.col("nome_socio_razao_social").cast("string"), F.lit("NA"))
-                )
+                F.concat_ws("-", F.coalesce(F.col("cnpj_basico").cast("string"), F.lit("NA")), F.coalesce(F.col("cnpj_cpf_socio").cast("string"), F.lit("NA")), F.coalesce(F.col("nome_socio_razao_social").cast("string"), F.lit("NA")))
             )
             df_transformado = df_transformado.withColumn("pk", expr_pk)
         else:
-            # Regra Geral para as demais tabelas
             pk_cols = CHAVES_PRIMARIAS.get(nome_tabela_uc, [])
             if pk_cols:
                 expr_pk = F.concat_ws("-", *[F.coalesce(F.col(c).cast("string"), F.lit("NA")) for c in pk_cols])
                 df_transformado = df_transformado.withColumn("pk", expr_pk)
             
-        # 3. Metadados e Gravação
         df_bronze = df_transformado \
             .withColumn("mes_referencia", F.lit(mes_referencia)) \
             .withColumn("inserted_at", F.current_timestamp()) \
@@ -176,9 +161,7 @@ def ingerir_tabela_bronze(spark: SparkSession, nome_tabela_uc: str, pasta_s3: st
             .saveAsTable(nome_completo_tabela))
         
         aplicar_comentarios_uc(spark, nome_completo_tabela, nome_tabela_uc, df_bronze.columns)
-            
         print(f"✅ Ingestão e documentação finalizadas: {nome_completo_tabela}\n")
-        
     except Exception as e:
         print(f"⚠️ Erro ao processar {nome_tabela_uc} ({mes_referencia}): {str(e)}\n")
         raise e
@@ -186,23 +169,10 @@ def ingerir_tabela_bronze(spark: SparkSession, nome_tabela_uc: str, pasta_s3: st
 def executar_pipeline_bronze(spark: SparkSession, meses_para_processar: List[str]):
     configurar_ambiente_unity_catalog(spark)
     for mes in meses_para_processar:
-        print("="*50)
-        print(f"🚀 INICIANDO INGESTÃO BRONZE: SNAPSHOT {mes}")
-        print("="*50)
         for nome_uc, pasta_s3 in TABELAS_BRONZE.items():
             ingerir_tabela_bronze(spark, nome_uc, pasta_s3, mes)
 
-
-# =====================================================================
-# BLOCO DE EXECUÇÃO PRINCIPAL
-# Funciona se rodar o ficheiro .py diretamente como script ou num Job
-# =====================================================================
 if __name__ == "__main__":
-    # Pega na sessão Spark ativa do cluster
     spark_session = SparkSession.builder.getOrCreate()
-    
-    # Define os meses a processar
     meses_alvo = ["2023-05", "2023-06", "2023-07", "2023-08"]
-    
-    print("Iniciando execução pelo bloco __main__...")
     executar_pipeline_bronze(spark_session, meses_alvo)
