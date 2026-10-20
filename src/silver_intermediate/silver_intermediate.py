@@ -111,8 +111,8 @@ def processar_scd2_silver(spark: SparkSession, nome_tabela: str, mes_atual: str)
 def gerar_log_eventos_negocio(spark: SparkSession, mes_atual: str):
     """Avalia as 7 regras de negócio usando datas reais de negócio e salva na silver_intermediate."""
     tabela_log = "tcc_receita.silver_intermediate.log_eventos_negocio"
-    anomes = mes_atual.replace("-", "")
-    print(f"📊 Avaliando Eventos de Negócio (Mês: {mes_atual})...")
+    anomes = mes_atual.replace("-", "").strip() # Ex: '2023-05' -> '202305'
+    print(f"📊 Avaliando Eventos de Negócio (Mês: {mes_atual} | Filtro AnoMes: {anomes})...")
 
     df_emp = spark.read.table("tcc_receita.silver_intermediate.empresas")
     df_est = spark.read.table("tcc_receita.silver_intermediate.estabelecimentos")
@@ -136,16 +136,18 @@ def gerar_log_eventos_negocio(spark: SparkSession, mes_atual: str):
 
     eventos = []
 
-    # 1. EMPRESA NASCEU (Baseado em data_inicio_atividade da Matriz no mês de referência)
+    # 1. EMPRESA NASCEU (Exclusivamente Matrizes cuja data_inicio_atividade pertence ao mês/ano avaliado)
     nascimentos = df_est.filter(
         (F.col("identificador_matriz_filial") == "1") &
-        (F.substring(F.col("data_inicio_atividade"), 1, 6) == anomes)
+        (F.col("data_inicio_atividade").isNotNull()) &
+        (F.length(F.trim(F.col("data_inicio_atividade"))) == 8) &
+        (F.substring(F.trim(F.col("data_inicio_atividade")), 1, 6) == anomes)
     ).select(
         F.col("cnpj_basico").alias("pk"),
         F.lit("EMPRESA NASCEU").alias("evento"),
         F.lit(None).cast("string").alias("valor_antigo"),
         F.lit("ATIVA").alias("valor_novo"),
-        F.col("data_inicio_atividade").alias("informacao_adicional")
+        F.trim(F.col("data_inicio_atividade")).alias("informacao_adicional")
     ).dropDuplicates(["pk"])
     eventos.append(nascimentos)
 
@@ -153,7 +155,8 @@ def gerar_log_eventos_negocio(spark: SparkSession, mes_atual: str):
     if mes_atual == "2023-05":
         est_estado = df_est.filter(
             (F.col("valid_since") == mes_atual) &
-            (F.substring(F.col("data_situacao_cadastral"), 1, 6) == anomes) &
+            (F.length(F.trim(F.col("data_situacao_cadastral"))) == 8) &
+            (F.substring(F.trim(F.col("data_situacao_cadastral")), 1, 6) == anomes) &
             (F.col("situacao_cadastral_desc") != "ATIVA")
         ).join(df_motivos, F.col("motivo_situacao_cadastral") == F.col("cod_motivo"), "left") \
         .select(
