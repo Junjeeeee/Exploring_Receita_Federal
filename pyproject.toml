@@ -14,7 +14,8 @@ dependencies = [
     "python-dotenv>=1.2.3,<2.0.0",
     "boto3>=1.43.98,<2.0.0",
     "tqdm>=4.70.1,<5.0.0",
-    "tenacity>=9.1.4,<10.0.0"
+    "tenacity>=9.1.4,<10.0.0",
+    "basedosdados (>=2.0.3,<3.0.0)"
 ]
 
 [dependency-groups]
