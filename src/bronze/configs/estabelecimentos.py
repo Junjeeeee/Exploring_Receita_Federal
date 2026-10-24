@@ -1,0 +1,51 @@
+from src.bronze.bronze_lib import TabelaBronzeConfig
+
+CONFIG = TabelaBronzeConfig(
+    nome_tabela_uc="estabelecimentos",
+    pasta_s3="estabele",
+    chaves_primarias=["cnpj_basico", "cnpj_ordem", "cnpj_dv"],
+    colunas_csv_para_ordenar=["cnae_fiscal_secundaria"],
+    descricao_tabela="Camada Bronze: Dados das filiais/matrizes (Estabelecimentos), contendo morada, contactos e situação cadastral detalhada.",
+    colunas_esperadas=[
+        "cnpj_basico", "cnpj_ordem", "cnpj_dv", "identificador_matriz_filial",
+        "nome_fantasia", "situacao_cadastral", "data_situacao_cadastral",
+        "motivo_situacao_cadastral", "nome_cidade_exterior", "pais",
+        "data_inicio_atividade", "cnae_fiscal_principal", "cnae_fiscal_secundaria",
+        "tipo_logradouro", "logradouro", "numero", "complemento", "bairro",
+        "cep", "uf", "municipio", "ddd_1", "telefone_1", "ddd_2", "telefone_2",
+        "ddd_fax", "fax", "correio_eletronico", "situacao_especial",
+        "data_situacao_especial"
+    ],
+    descricao_colunas={
+        "cnpj_basico": "Radical do CNPJ (primeiros 8 dígitos) que identifica a raiz corporativa da entidade.",
+        "cnpj_ordem": "Número de ordem do estabelecimento (geralmente 0001 para matrizes e sequencial para filiais).",
+        "cnpj_dv": "Dígitos verificadores do CNPJ (últimos 2 dígitos).",
+        "identificador_matriz_filial": "Código indicador: 1 para Matriz, 2 para Filial.",
+        "nome_fantasia": "Nome comercial de fachada (Nome Fantasia) do estabelecimento.",
+        "situacao_cadastral": "Código do status operacional (ex: Ativa, Inapta, Baixada).",
+        "data_situacao_cadastral": "Data da última alteração de status da situação cadastral (AAAAMMDD).",
+        "motivo_situacao_cadastral": "Código do motivo da situação cadastral atual.",
+        "nome_cidade_exterior": "Nome da cidade para estabelecimentos localizados no exterior.",
+        "pais": "Código do país de localização do estabelecimento.",
+        "data_inicio_atividade": "Data de início das operações comerciais do estabelecimento (AAAAMMDD).",
+        "cnae_fiscal_principal": "Código da atividade econômica primária (CNAE) do estabelecimento.",
+        "cnae_fiscal_secundaria": "Lista separada por vírgulas das atividades econômicas secundárias (CNAEs).",
+        "tipo_logradouro": "Tipo de via do endereço (ex: Rua, Avenida, Praça).",
+        "logradouro": "Nome do logradouro ou via do endereço.",
+        "numero": "Número de porta do endereço do estabelecimento.",
+        "complemento": "Informações complementares do endereço (ex: Sala, Andar, Bloco).",
+        "bairro": "Nome do bairro ou distrito.",
+        "cep": "Código de Endereçamento Postal (CEP) brasileiro.",
+        "uf": "Sigla da Unidade Federativa (Estado) no Brasil.",
+        "municipio": "Código do município onde o estabelecimento está situado.",
+        "ddd_1": "Código de Discagem Direta a Distância (DDD) do telefone primário.",
+        "telefone_1": "Número do telefone primário de contacto.",
+        "ddd_2": "Código de Discagem Direta a Distância (DDD) do telefone secundário.",
+        "telefone_2": "Número do telefone secundário de contacto.",
+        "ddd_fax": "Código DDD da linha de fax.",
+        "fax": "Número da linha de fax.",
+        "correio_eletronico": "Endereço de e-mail institucional para contacto.",
+        "situacao_especial": "Descrição de situações especiais (ex: Concordata, Recuperação Judicial).",
+        "data_situacao_especial": "Data em que a situação especial foi estabelecida (AAAAMMDD)."
+    }
+)
