@@ -1,4 +1,5 @@
 import argparse
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -11,8 +12,7 @@ DESCRICAO_COLUNAS_METADADOS: Dict[str, str] = {
     "change_hash": "Metadado: Hash MD5 de todas as colunas brutas para deteção rigorosa de mutação (Change Data Capture).",
     "pk": "Metadado: Chave primária lógica gerada pela concatenação dinâmica da granularidade da tabela.",
     "mes_referencia": "Metadado: Mês e ano de referência do snapshot extraído da Receita Federal (Partição).",
-    "inserted_at": "Metadado: Timestamp de ingestão inicial do registo na camada Bronze.",
-    "updated_at": "Metadado: Timestamp da última atualização ou reprocessamento do registo na camada Bronze."
+    "bronze_processed_at": "Metadado: Timestamp de ingestão/reprocessamento do registo na camada Bronze."
 }
 
 
@@ -26,6 +26,7 @@ class TabelaBronzeConfig:
     colunas_esperadas: List[str] = field(default_factory=list)
     pk_custom_expr: Optional[Column] = None
     colunas_csv_para_ordenar: List[str] = field(default_factory=list)
+    limite_queda_volumetria: float = 0.15
 
 
 def gerar_range_meses(mes_ini: Optional[str] = None, mes_fim: Optional[str] = None) -> List[str]:
@@ -45,6 +46,18 @@ def gerar_range_meses(mes_ini: Optional[str] = None, mes_fim: Optional[str] = No
         meses.append(dt_atual.strftime("%Y-%m"))
         dt_atual += relativedelta(months=1)
     return meses
+
+
+def obter_bucket_landing() -> str:
+    """Retorna o mesmo bucket usado pela Landing.
+
+    Configure AWS_BUCKET_NAME no ambiente do job Databricks se o bucket não
+    for o padrão histórico `lakehouse-receita`.
+    """
+    bucket = (os.getenv("AWS_BUCKET_NAME") or "lakehouse-receita").strip()
+    if not bucket:
+        raise EnvironmentError("AWS_BUCKET_NAME está vazio.")
+    return bucket
 
 
 def configurar_ambiente_unity_catalog(spark: SparkSession):
@@ -73,10 +86,21 @@ def ingerir_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_i
     print(f"🚀 Iniciando Ingestão Bronze: {nome_completo_tabela} | Meses: {meses}")
 
     for mes_referencia in meses:
-        caminho_landing = f"s3://lakehouse-receita/landing/receita_federal/{config.pasta_s3}/mes_referencia={mes_referencia}/"
+        caminho_landing = (
+            f"s3://{obter_bucket_landing()}/landing/receita_federal/"
+            f"{config.pasta_s3}/mes_referencia={mes_referencia}/"
+        )
         print(f"🔄 Lendo e transformando {config.nome_tabela_uc} (Mês: {mes_referencia})...")
 
         df_raw = spark.read.parquet(caminho_landing)
+
+        # 1. Validação Antecipada (Schema)
+        if config.colunas_esperadas:
+            colunas_fonte = set(df_raw.columns)
+            colunas_esperadas = set(config.colunas_esperadas)
+            faltantes = colunas_esperadas - colunas_fonte
+            if faltantes:
+                raise ValueError(f"FALHA DE QUALIDADE [SCHEMA]: As seguintes colunas obrigatórias estão ausentes no arquivo fonte: {faltantes}")
 
         # Ordena listas separadas por vírgula (ex: CNAEs secundários) para evitar falso positivo no hash
         for col_ord in config.colunas_csv_para_ordenar:
@@ -89,34 +113,48 @@ def ingerir_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_i
                     ).otherwise(F.col(col_ord))
                 )
 
-        colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys()) | {"ingested_at"}
+        colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys()) | {"ingested_at", "landing_ingested_at"}
         colunas_negocio = [c for c in df_raw.columns if c not in colunas_tecnicas]
+        
+        # Filtro rigoroso: descarta a linha se QUALQUER coluna da PK for nula original (somente se não usar expr customizada)
+        if config.pk_custom_expr is None and config.chaves_primarias:
+            df_transformado = df_raw.dropna(subset=config.chaves_primarias)
+            for col_pk in config.chaves_primarias:
+                df_transformado = df_transformado.filter(F.trim(F.col(col_pk)) != "")
+        else:
+            df_transformado = df_raw
 
-        # Gera Hash MD5 apenas das colunas de negócio com UPPER e TRIM
+        # Gera Hash MD5 apenas das colunas de negócio com UPPER e TRIM (Trata nulos como 'NULL' para o hash)
         expr_hash = F.md5(F.concat_ws("||", *[
-            F.upper(F.trim(F.coalesce(F.col(c).cast("string"), F.lit(""))))
+            F.coalesce(F.trim(F.upper(F.col(c).cast("string"))), F.lit("NULL"))
             for c in colunas_negocio
         ]))
-        df_transformado = df_raw.withColumn("change_hash", expr_hash)
+        df_transformado = df_transformado.withColumn("change_hash", expr_hash)
 
-        # Aplica expressão customizada de PK (se existir) ou concatena chaves_primarias
+        # Aplica expressão customizada de PK (se existir) ou concatena chaves_primarias (usando delimitador |)
         if config.pk_custom_expr is not None:
             df_transformado = df_transformado.withColumn("pk", config.pk_custom_expr)
+            # Remove PKs resultantes nulas ou vazias da expr customizada
+            df_transformado = df_transformado.filter(F.col("pk").isNotNull() & (F.trim(F.col("pk")) != ""))
         elif config.chaves_primarias:
-            expr_pk = F.concat_ws("-", *[
-                F.coalesce(F.col(c).cast("string"), F.lit("NA")) for c in config.chaves_primarias
-            ])
-            df_transformado = df_transformado.withColumn("pk", expr_pk)
+            if len(config.chaves_primarias) > 1:
+                df_transformado = df_transformado.withColumn("pk", F.concat_ws("|", *[F.trim(F.col(c)) for c in config.chaves_primarias]))
+            else:
+                df_transformado = df_transformado.withColumn("pk", F.trim(F.col(config.chaves_primarias[0])).cast("string"))
+
+        # Dedup lazy evaluation
+        df_transformado = df_transformado.dropDuplicates(["pk"])
 
         df_bronze = (
             df_transformado
             .withColumn("mes_referencia", F.lit(mes_referencia))
-            .withColumn("inserted_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+            .withColumn("bronze_processed_at", F.current_timestamp())
         )
 
         if "ingested_at" in df_bronze.columns:
             df_bronze = df_bronze.drop("ingested_at")
+        if "landing_ingested_at" in df_bronze.columns:
+            df_bronze = df_bronze.drop("landing_ingested_at")
 
         (
             df_bronze.write
@@ -155,17 +193,21 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
         validar_schema(df_mes.select(*colunas_raw), config.nome_tabela_uc)
 
         # 2. Validação de Volumetria
-        validar_volumetria(spark, df_mes, config.nome_tabela_uc, mes_referencia, threshold_queda=0.15)
+        validar_volumetria(spark, df_mes, config.nome_tabela_uc, mes_referencia, threshold_queda=config.limite_queda_volumetria)
 
         # 3. Validação de Hash e PK não nulos
-        nulos_hash = df_mes.filter(F.col("change_hash").isNull()).count()
-        if nulos_hash > 0:
-            raise ValueError(f"❌ {nulos_hash} registos com change_hash nulo em {nome_completo_tabela} ({mes_referencia})!")
+        # Utilizando agregação única para evitar múltiplos counts
+        res = df_mes.select(
+            F.sum(F.when(F.col("change_hash").isNull(), 1).otherwise(0)).alias("nulos_hash"),
+            F.sum(F.when(F.col("pk").isNull() | (F.trim(F.col("pk")) == ""), 1).otherwise(0)).alias("nulos_pk")
+        ).collect()[0]
+
+        if res["nulos_hash"] > 0:
+            raise ValueError(f"❌ {res['nulos_hash']} registos com change_hash nulo em {nome_completo_tabela} ({mes_referencia})!")
 
         if config.chaves_primarias or config.pk_custom_expr is not None:
-            nulos_pk = df_mes.filter(F.col("pk").isNull() | (F.trim(F.col("pk")) == "")).count()
-            if nulos_pk > 0:
-                raise ValueError(f"❌ {nulos_pk} registos com PK nula/vazia em {nome_completo_tabela} ({mes_referencia})!")
+            if res["nulos_pk"] > 0:
+                raise ValueError(f"❌ {res['nulos_pk']} registos com PK nula/vazia em {nome_completo_tabela} ({mes_referencia})!")
 
     print(f"✅ Data Quality aprovado com sucesso: {nome_completo_tabela}\n")
 
