@@ -1,92 +1,133 @@
 CREATE SCHEMA IF NOT EXISTS tcc_receita.gold;
 
 CREATE TABLE IF NOT EXISTS tcc_receita.gold.obt_dashboard_eventos (
-    data_referencia DATE,
-    ano INT,
-    mes INT,
-    tipo_evento STRING,
-    transicao_detalhe STRING,
-    motivo_detalhe STRING,
-    categoria_macro_evento STRING,
-    cnpj_raiz STRING,
-    razao_social STRING,
-    porte_empresa STRING,
-    capital_social DOUBLE,
-    uf STRING,
-    municipio STRING,
-    bairro STRING,
-    codigo_cnae STRING,
-    nome_cnae STRING,
-    classe_cnae STRING,
-    grupo_cnae STRING,
-    divisao_cnae STRING,
-    grande_area_cnae STRING,
-    etl_load_ts TIMESTAMP
-);
+    mes_referencia STRING COMMENT 'Partição mensal do evento (YYYY-MM).',
+    data_referencia DATE COMMENT 'Primeiro dia do mês de referência (YYYY-MM-01).',
+    ano INT COMMENT 'Ano do evento.',
+    trimestre INT COMMENT 'Trimestre do evento.',
+    mes INT COMMENT 'Mês numérico do evento (1 a 12).',
+    cnpj_raiz STRING COMMENT 'Radical de 8 dígitos do CNPJ da empresa.',
+    tipo_evento STRING COMMENT 'Tipo do evento de negócio originado na Silver.',
+    transicao_detalhe STRING COMMENT 'Par valor_anterior -> valor_posterior.',
+    motivo_detalhe STRING COMMENT 'Descrição complementar do motivo cadastral ou data.',
+    categoria_macro_evento STRING COMMENT 'Classificação amigável do evento para dashboards.',
+    razao_social STRING COMMENT 'Razão social da empresa.',
+    nome_fantasia STRING COMMENT 'Nome fantasia da matriz.',
+    porte_anterior STRING COMMENT 'Enquadramento de porte antes do evento (MEI, ME, EPP, DEMAIS, NAO APLICAVEL).',
+    porte_empresa STRING COMMENT 'Enquadramento de porte após o evento (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO).',
+    situacao_cadastral_anterior STRING COMMENT 'Situação cadastral antes do evento.',
+    situacao_cadastral_posterior STRING COMMENT 'Situação cadastral após o evento.',
+    opcao_mei_anterior BOOLEAN COMMENT 'Status MEI antes do evento.',
+    opcao_mei_posterior BOOLEAN COMMENT 'Status MEI após o evento.',
+    opcao_simples_anterior BOOLEAN COMMENT 'Status Simples Nacional antes do evento.',
+    opcao_simples_posterior BOOLEAN COMMENT 'Status Simples Nacional após o evento.',
+    capital_social DOUBLE COMMENT 'Capital social em Reais (BRL) após o evento.',
+    uf STRING COMMENT 'UF consolidada da matriz.',
+    municipio STRING COMMENT 'Município consolidado da matriz.',
+    codigo_ibge_municipio STRING COMMENT 'Código IBGE de 7 dígitos do município.',
+    bairro STRING COMMENT 'Localidade/bairro analítico normalizado via CEP (com fallback para campo livre).',
+    bairro_campo_livre STRING COMMENT 'Bairro bruto declarado na Receita Federal.',
+    codigo_cnae_anterior STRING COMMENT 'Código CNAE principal antes do evento.',
+    nome_cnae_anterior STRING COMMENT 'Descrição do CNAE principal antes do evento.',
+    grande_area_cnae_anterior STRING COMMENT 'Grande setor econômico antes do evento.',
+    codigo_cnae STRING COMMENT 'Código CNAE principal após o evento.',
+    nome_cnae STRING COMMENT 'Descrição do CNAE principal após o evento.',
+    classe_cnae STRING COMMENT 'Nome da classe CNAE após o evento.',
+    grupo_cnae STRING COMMENT 'Nome do grupo CNAE após o evento.',
+    divisao_cnae STRING COMMENT 'Nome da divisão CNAE após o evento.',
+    grande_area_cnae STRING COMMENT 'Grande setor econômico após o evento.',
+    data_carga_etl TIMESTAMP COMMENT 'Timestamp de carga na camada Gold.'
+)
+USING DELTA
+PARTITIONED BY (mes_referencia)
+COMMENT 'Camada Gold: OBT de Eventos de Transição Empresarial (grão: 1 linha por evento/empresa no mês, com estados anterior e posterior).';
 
--- 1. Idempotência com fallback para Mês-1
-DELETE FROM tcc_receita.gold.obt_dashboard_eventos
-WHERE data_referencia >= to_date(concat(COALESCE(NULLIF(TRIM({{mes_referencia_inicial}}), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')), '-01'), 'yyyy-MM-dd')
-  AND data_referencia <= to_date(concat(COALESCE(NULLIF(TRIM({{mes_referencia_final}}), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')), '-01'), 'yyyy-MM-dd');
-
--- 2. Inserção Incremental com Broadcast nas dimensões pequenas
-INSERT INTO tcc_receita.gold.obt_dashboard_eventos
+INSERT OVERWRITE tcc_receita.gold.obt_dashboard_eventos
+REPLACE WHERE mes_referencia >= COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM'))
+          AND mes_referencia <= COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM'))
 WITH params AS (
     SELECT 
-        CAST(regexp_replace(COALESCE(NULLIF(TRIM({{mes_referencia_inicial}}), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')), '-', '') AS INT) AS nk_ini,
-        CAST(regexp_replace(COALESCE(NULLIF(TRIM({{mes_referencia_final}}), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')), '-', '') AS INT) AS nk_fim
+        COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM')) AS mes_ini,
+        COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM')) AS mes_fim
 ),
-bridge_primaria AS (
-    SELECT SK_cnae_group, SK_cnae 
-    FROM tcc_receita.silver_final.bridge_cnaes 
-    WHERE is_primary = TRUE
+-- Garante unicidade estrita (1 CNAE primário por grupo) para nunca multiplicar linhas da Fato
+ponte_primaria AS (
+    SELECT sk_grupo_cnae, sk_cnae
+    FROM (
+        SELECT 
+            sk_grupo_cnae, 
+            sk_cnae,
+            ROW_NUMBER() OVER (PARTITION BY sk_grupo_cnae ORDER BY nk_cnae ASC) AS rn
+        FROM tcc_receita.silver_final.ponte_cnae
+        WHERE cnae_principal = TRUE AND sk_grupo_cnae != -1
+    )
+    WHERE rn = 1
 )
-SELECT /*+ BROADCAST(t, sc, cnae) */
-    t.date AS data_referencia,
-    t.year AS ano,
-    t.month AS mes,
-    sc.state_change_type AS tipo_evento,
-    sc.state_change_detail AS transicao_detalhe,
-    sc.description AS motivo_detalhe,
+SELECT /*+ BROADCAST(t, sc, cnae_ant, cnae_post) */
+    f.mes_referencia,
+    t.data_referencia,
+    t.ano,
+    t.trimestre,
+    t.mes,
+    COALESCE(NULLIF(f.cnpj_raiz, ''), c_post.cnpj_raiz, c_ant.cnpj_raiz, '00000000') AS cnpj_raiz,
+    sc.tipo_mudanca_estado AS tipo_evento,
+    sc.detalhe_mudanca_estado AS transicao_detalhe,
+    sc.descricao_adicional AS motivo_detalhe,
     CASE 
-        WHEN sc.state_change_type = 'EMPRESA NASCEU' THEN 'ABERTURA'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.description LIKE '%FALENCIA%' THEN 'FECHAMENTO POR FALÊNCIA'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.description LIKE '%OBITO DO MEI%' THEN 'EXTINÇÃO POR ÓBITO (MEI)'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND (sc.description LIKE '%EXTINCAO POR ENCERRAMENTO LIQUIDACAO%' OR sc.description LIKE '%LIQUIDACAO JUDICIAL%') THEN 'EXTINÇÃO POR LIQUIDAÇÃO'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND (sc.description LIKE '%OMISSAO DE DECLARACOES%' OR sc.description LIKE '%INAPTIDAO%') THEN 'INAPTIDÃO FISCAL / OMISSÃO'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.state_change_detail LIKE '%BAIXADA%' THEN 'BAIXA VOLUNTÁRIA / OUTRAS'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.state_change_detail LIKE '%INAPTA%' THEN 'INAPTIDÃO FISCAL'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.state_change_detail LIKE '%SUSPENSA%' THEN 'SUSPENSÃO TEMPORÁRIA'
-        WHEN sc.state_change_type = 'MUDOU ESTADO CADASTRAL' AND sc.state_change_detail LIKE '%NULA%' THEN 'INSCRIÇÃO NULA / VÍCIOS'
-        ELSE sc.state_change_type
+        WHEN sc.tipo_mudanca_estado = 'EMPRESA NASCEU' THEN 'ABERTURA'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'FALENCIA|FALÊNCIA' THEN 'FECHAMENTO POR FALENCIA'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'OBITO|ÓBITO' THEN 'EXTINCAO POR OBITO (MEI)'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'LIQUIDACAO|LIQUIDAÇÃO' THEN 'EXTINCAO POR LIQUIDACAO'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'OMISSAO|OMISSÃO|INAPTIDAO|INAPTIDÃO' THEN 'INAPTIDAO FISCAL / OMISSAO'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'BAIXADA' THEN 'BAIXA VOLUNTARIA / OUTRAS'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'INAPTA' THEN 'INAPTIDAO FISCAL'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'SUSPENSA' THEN 'SUSPENSAO TEMPORARIA'
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'NULA' THEN 'INSCRICAO NULA / VICIOS'
+        ELSE COALESCE(sc.tipo_mudanca_estado, 'NAO IDENTIFICADO')
     END AS categoria_macro_evento,
-    c_after.cnpj_raiz,
-    c_after.legal_name AS razao_social,
-    c_after.company_size AS porte_empresa,
-    c_after.capital_social,
-    c_after.state AS uf,
-    c_after.city AS municipio,
-    c_after.neighborhood AS bairro,
-    cnae.cnae AS codigo_cnae,
-    cnae.cnae_name AS nome_cnae,
-    cnae.class_name AS classe_cnae,
-    cnae.group_name AS grupo_cnae,
-    cnae.division_name AS divisao_cnae,
-    cnae.great_area_of_activity_name AS grande_area_cnae,
-    NOW() AS etl_load_ts
-FROM tcc_receita.silver_final.fact_state_change f
-INNER JOIN tcc_receita.silver_final.dim_time t 
-    ON f.SK_time = t.SK_time
+    COALESCE(NULLIF(c_post.razao_social, 'NAO APLICAVEL / INEXISTENTE'), c_ant.razao_social, 'NAO IDENTIFICADO') AS razao_social,
+    COALESCE(c_post.nome_fantasia_matriz, c_ant.nome_fantasia_matriz) AS nome_fantasia,
+    COALESCE(c_ant.enquadramento_porte_analitico, 'NAO APLICAVEL') AS porte_anterior,
+    COALESCE(NULLIF(c_post.enquadramento_porte_analitico, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS porte_empresa,
+    COALESCE(c_ant.situacao_cadastral_matriz, 'INEXISTENTE') AS situacao_cadastral_anterior,
+    COALESCE(c_post.situacao_cadastral_matriz, 'NAO IDENTIFICADO') AS situacao_cadastral_posterior,
+    COALESCE(c_ant.opcao_pelo_mei, FALSE) AS opcao_mei_anterior,
+    COALESCE(c_post.opcao_pelo_mei, FALSE) AS opcao_mei_posterior,
+    COALESCE(c_ant.opcao_pelo_simples, FALSE) AS opcao_simples_anterior,
+    COALESCE(c_post.opcao_pelo_simples, FALSE) AS opcao_simples_posterior,
+    COALESCE(c_post.capital_social, c_ant.capital_social, 0.0) AS capital_social,
+    COALESCE(NULLIF(c_post.uf, 'NA'), NULLIF(c_ant.uf, 'NA'), 'NI') AS uf,
+    COALESCE(NULLIF(c_post.municipio, 'NAO APLICAVEL'), NULLIF(c_ant.municipio, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS municipio,
+    COALESCE(c_post.codigo_ibge_municipio, c_ant.codigo_ibge_municipio) AS codigo_ibge_municipio,
+    COALESCE(NULLIF(c_post.localidade_analitica, 'NAO APLICAVEL'), NULLIF(c_ant.localidade_analitica, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS bairro,
+    COALESCE(NULLIF(c_post.bairro_campo_livre, 'NAO APLICAVEL'), NULLIF(c_ant.bairro_campo_livre, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS bairro_campo_livre,
+    COALESCE(cnae_ant.codigo_cnae, '0000000') AS codigo_cnae_anterior,
+    COALESCE(cnae_ant.descricao_cnae, 'NAO INFORMADO / NAO APLICAVEL') AS nome_cnae_anterior,
+    COALESCE(cnae_ant.grande_setor_economico, 'OUTROS / NAO ESPECIFICADO') AS grande_area_cnae_anterior,
+    COALESCE(cnae_post.codigo_cnae, '0000000') AS codigo_cnae,
+    COALESCE(cnae_post.descricao_cnae, 'NAO INFORMADO / NAO APLICAVEL') AS nome_cnae,
+    COALESCE(cnae_post.nome_classe, 'NAO ESPECIFICADO') AS classe_cnae,
+    COALESCE(cnae_post.nome_grupo, 'NAO ESPECIFICADO') AS grupo_cnae,
+    COALESCE(cnae_post.nome_divisao, 'NAO ESPECIFICADO') AS divisao_cnae,
+    COALESCE(cnae_post.grande_setor_economico, 'OUTROS / NAO ESPECIFICADO') AS grande_area_cnae,
+    NOW() AS data_carga_etl
+FROM tcc_receita.silver_final.fato_mudanca_estado f
 CROSS JOIN params p
-INNER JOIN tcc_receita.silver_final.dim_state_change sc 
-    ON f.SK_state_change = sc.SK_state_change
-INNER JOIN tcc_receita.silver_final.dim_company c_after 
-    ON f.SK_company_after = c_after.SK_company
-LEFT JOIN bridge_primaria b 
-    ON f.SK_cnae_group_after = b.SK_cnae_group
-LEFT JOIN tcc_receita.silver_final.dim_cnae cnae 
-    ON b.SK_cnae = cnae.SK_cnae
-WHERE t.NK_time >= p.nk_ini
-  AND t.NK_time <= p.nk_fim;
-
-OPTIMIZE tcc_receita.gold.obt_dashboard_eventos ZORDER BY (data_referencia, uf, nome_cnae);
+LEFT JOIN tcc_receita.silver_final.dim_tempo t 
+    ON f.sk_tempo = t.sk_tempo
+LEFT JOIN tcc_receita.silver_final.dim_mudanca_estado sc 
+    ON f.sk_mudanca_estado = sc.sk_mudanca_estado
+LEFT JOIN tcc_receita.silver_final.dim_empresa c_ant 
+    ON f.sk_empresa_anterior = c_ant.sk_empresa
+LEFT JOIN tcc_receita.silver_final.dim_empresa c_post 
+    ON f.sk_empresa_posterior = c_post.sk_empresa
+LEFT JOIN ponte_primaria b_ant 
+    ON f.sk_grupo_cnae_anterior = b_ant.sk_grupo_cnae
+LEFT JOIN tcc_receita.silver_final.dim_cnae cnae_ant 
+    ON COALESCE(b_ant.sk_cnae, -1) = cnae_ant.sk_cnae
+LEFT JOIN ponte_primaria b_post 
+    ON f.sk_grupo_cnae_posterior = b_post.sk_grupo_cnae
+LEFT JOIN tcc_receita.silver_final.dim_cnae cnae_post 
+    ON COALESCE(b_post.sk_cnae, -1) = cnae_post.sk_cnae
+WHERE f.mes_referencia >= p.mes_ini
+  AND f.mes_referencia <= p.mes_fim;
