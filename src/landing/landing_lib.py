@@ -213,6 +213,27 @@ def listar_arquivos_do_mes(diretorio_mes: str) -> List[str]:
     return sorted(set(encontrados), key=str.casefold)
 
 
+def _membros_dados_rfb(zip_ref: zipfile.ZipFile):
+    """Retorna os arquivos de dados dentro dos ZIPs da Receita Federal.
+
+    Os arquivos internos da RFB não usam necessariamente a extensão .csv:
+    por exemplo, Empresas usa nomes terminados em .EMPRECSV e Estabelecimentos
+    pode usar .ESTABELE. Portanto, não filtrar pelo sufixo .csv.
+    """
+    membros = []
+    for membro in zip_ref.infolist():
+        if membro.is_dir():
+            continue
+        caminho = PurePosixPath(membro.filename)
+        nome = caminho.name
+        if not nome or nome in {".DS_Store", "Thumbs.db"} or nome.startswith("._"):
+            continue
+        if "__MACOSX" in caminho.parts:
+            continue
+        membros.append(membro)
+    return membros
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=8),
@@ -248,13 +269,10 @@ def descarregar_zip(url: str, nome_zip: str, pasta_temp_tabela: str) -> str:
                         barra.update(arquivo.write(bloco))
 
         with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
-            # Força a leitura da tabela central e garante que existe ao menos um CSV.
-            membros_csv = [
-                membro for membro in zip_ref.infolist()
-                if not membro.is_dir() and PurePosixPath(membro.filename).suffix.lower() == ".csv"
-            ]
-            if not membros_csv:
-                raise ValueError(f"ZIP sem membros CSV: {nome_seguro}")
+            # A RFB usa extensões próprias nos CSVs internos (ex.: .EMPRECSV).
+            membros_dados = _membros_dados_rfb(zip_ref)
+            if not membros_dados:
+                raise ValueError(f"ZIP sem arquivos de dados: {nome_seguro}")
         return caminho_zip
     except Exception:
         if os.path.exists(caminho_zip):
@@ -273,9 +291,7 @@ def descarregar_e_extrair(url: str, nome_zip: str, pasta_temp_tabela: str) -> Li
     try:
         raiz = os.path.realpath(pasta_temp_tabela)
         with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
-            for membro in zip_ref.infolist():
-                if membro.is_dir() or PurePosixPath(membro.filename).suffix.lower() != ".csv":
-                    continue
+            for membro in _membros_dados_rfb(zip_ref):
                 destino = os.path.realpath(os.path.join(pasta_temp_tabela, *PurePosixPath(membro.filename).parts))
                 if os.path.commonpath([raiz, destino]) != raiz:
                     raise ValueError(f"Caminho inseguro dentro do ZIP: {membro.filename!r}")
@@ -407,14 +423,12 @@ def _extrair_zip_rfb_para_s3(
             url = f"{_url_download_base()}/{mes_alvo}/{urllib.parse.quote(nome_arquivo, safe='')}"
             caminho_zip = descarregar_zip(url, nome_arquivo, pasta_temp_tabela)
             with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
-                membros_csv = [
-                    membro for membro in zip_ref.infolist()
-                    if not membro.is_dir() and PurePosixPath(membro.filename).suffix.lower() == ".csv"
-                ]
-                if not membros_csv:
-                    raise ValueError(f"ZIP sem CSVs para {config.nome_tabela}: {nome_arquivo}")
+                # Os CSVs da Receita têm extensões próprias, não necessariamente .csv.
+                membros_dados = _membros_dados_rfb(zip_ref)
+                if not membros_dados:
+                    raise ValueError(f"ZIP sem arquivos de dados para {config.nome_tabela}: {nome_arquivo}")
 
-                for membro in membros_csv:
+                for membro in membros_dados:
                     print(f"  📄 Processando {membro.filename}... ")
                     with zip_ref.open(membro, "r") as arquivo_csv:
                         chunks = pd.read_csv(
