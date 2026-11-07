@@ -98,7 +98,7 @@ def validar_config_landing(
         raise ValueError(f"A configuração de {config.nome_tabela} precisa de nomes de colunas válidos.")
     if len(config.colunas) != len(set(config.colunas)):
         raise ValueError(f"Há nomes de colunas duplicados em {config.nome_tabela}.")
-    reservadas = {"mes_referencia", "ingested_at"}
+    reservadas = {"mes_referencia", "source_reference", "ingested_at"}
     conflito = reservadas.intersection(config.colunas)
     if conflito:
         raise ValueError(f"Colunas de origem usam nomes reservados: {sorted(conflito)}")
@@ -130,6 +130,8 @@ def gerar_schema_arrow(config: TabelaLandingConfig) -> pa.Schema:
         campos.append((col, pa.float64() if col in floats else pa.string()))
     if config.is_snapshot_mensal:
         campos.append(("mes_referencia", pa.string()))
+    # Identifica a versão lógica da fonte; ingested_at registra quando foi extraída.
+    campos.append(("source_reference", pa.string()))
     campos.append(("ingested_at", pa.string()))
     return pa.schema(campos)
 
@@ -449,6 +451,7 @@ def _extrair_zip_rfb_para_s3(
 
                             if config.is_snapshot_mensal:
                                 chunk["mes_referencia"] = mes_alvo
+                            chunk["source_reference"] = f"RFB_ZIP:{mes_alvo}"
                             chunk["ingested_at"] = timestamp_ingestao
 
                             tabela_arrow = pa.Table.from_pandas(
@@ -479,6 +482,38 @@ def _extrair_zip_rfb_para_s3(
             f"escritas={linhas_gravadas}, Parquet={linhas}."
         )
     enviar_para_s3(caminho_parquet_local, chave_s3)
+
+
+def _deduplicar_por_chave_sem_perder_conflitos(
+    df: pd.DataFrame, chave: str, nome_fonte: str
+) -> pd.DataFrame:
+    """Remove duplicatas idênticas e interrompe quando uma chave tem conteúdos distintos."""
+    if chave not in df.columns:
+        raise ValueError(f"Chave {chave!r} ausente na fonte {nome_fonte}.")
+    if df[chave].isna().any() or (df[chave].astype(str).str.strip() == "").any():
+        raise ValueError(f"A fonte {nome_fonte} contém valores nulos/vazios em {chave}.")
+
+    duplicadas = df[df.duplicated(subset=[chave], keep=False)]
+    if duplicadas.empty:
+        return df.reset_index(drop=True)
+
+    colunas_conteudo = [c for c in df.columns if c != chave]
+    conflitos = (
+        duplicadas.groupby(chave, dropna=False)[colunas_conteudo]
+        .nunique(dropna=False)
+        .gt(1)
+        .any(axis=1)
+    )
+    chaves_conflitantes = conflitos[conflitos].index.astype(str).tolist()
+    if chaves_conflitantes:
+        amostra = chaves_conflitantes[:10]
+        raise ValueError(
+            f"A fonte {nome_fonte} contém {len(chaves_conflitantes)} chave(s) "
+            f"{chave} com registros conflitantes. Amostra: {amostra}"
+        )
+
+    # Duplicatas restantes são cópias idênticas; não há escolha arbitrária de conteúdo.
+    return df.drop_duplicates(subset=[chave], keep="first").reset_index(drop=True)
 
 
 def _gravar_dataframe_estatico(
@@ -517,16 +552,16 @@ def _extrair_fonte_estatica(
         if not isinstance(payload, list):
             raise ValueError("Resposta inesperada da API de CNAE do IBGE: era esperada uma lista.")
 
-        linhas = {}
+        linhas = []
         for item in payload:
             codigo = re.sub(r"\D", "", str(item.get("id", "")))
-            if not codigo or codigo in linhas:
-                continue
+            if not codigo:
+                raise ValueError(f"Resposta da API IBGE contém código CNAE inválido: {item.get('id')!r}")
             classe = item.get("classe") or {}
             grupo = classe.get("grupo") or {}
             divisao = grupo.get("divisao") or {}
             secao = divisao.get("secao") or {}
-            linhas[codigo] = {
+            linhas.append({
                 "codigo": codigo,
                 "descricao": str(item.get("descricao") or "").upper().strip(),
                 "secao": str(secao.get("id") or "").strip(),
@@ -537,9 +572,11 @@ def _extrair_fonte_estatica(
                 "nome_grupo": str(grupo.get("descricao") or "").upper().strip(),
                 "classe": str(classe.get("id") or "").strip(),
                 "nome_classe": str(classe.get("descricao") or "").upper().strip(),
+                "source_reference": URL_IBGE_CNAE,
                 "ingested_at": timestamp,
-            }
-        df_ibge = pd.DataFrame(list(linhas.values()))
+            })
+        df_ibge = pd.DataFrame(linhas)
+        df_ibge = _deduplicar_por_chave_sem_perder_conflitos(df_ibge, "codigo", "API CNAE IBGE")
         _gravar_dataframe_estatico(df_ibge, caminho_local, config)
 
     elif config.origem == "BQ_CEPS":
@@ -561,8 +598,9 @@ def _extrair_fonte_estatica(
           AND LENGTH(REGEXP_REPLACE(TRIM(cep), r'[^0-9]', '')) = 8
         """
         df_ceps = bd.read_sql(query=query_ceps, billing_project_id=project_id)
-        df_ceps = df_ceps.drop_duplicates(subset=["cep"]).reset_index(drop=True)
+        df_ceps["source_reference"] = "basedosdados.br_bd_diretorios_brasil.cep"
         df_ceps["ingested_at"] = timestamp
+        df_ceps = _deduplicar_por_chave_sem_perder_conflitos(df_ceps, "cep", "Base de CEPs")
         _gravar_dataframe_estatico(df_ceps, caminho_local, config)
 
     elif config.origem == "RFB_ZIP":

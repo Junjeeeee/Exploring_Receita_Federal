@@ -1,66 +1,74 @@
+-- Silver Final | ponte_cnae
+-- -1 na dim_cnae = não aplicável; -2 = CNAE válido informado, mas ausente do domínio IBGE.
+
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_final;
 
-CREATE OR REPLACE TABLE tcc_receita.silver_final.ponte_cnae (
+CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.ponte_cnae (
     sk_grupo_cnae BIGINT COMMENT 'FK para dim_grupo_cnae.',
-    sk_cnae BIGINT COMMENT 'FK para dim_cnae (-1 se o código histórico não constar na tabela oficial vigente).',
+    sk_cnae BIGINT COMMENT 'FK para dim_cnae; -2 quando o código não existe no domínio IBGE; -1 não aplicável.',
     nk_grupo_cnae STRING COMMENT 'Chave natural canônica do grupo de CNAEs.',
-    nk_cnae STRING COMMENT 'Código de 7 dígitos do CNAE individual.',
-    cnae_principal BOOLEAN COMMENT 'TRUE se o CNAE for o principal do grupo, FALSE se for secundário.',
-    data_carga_etl TIMESTAMP COMMENT 'Timestamp de processamento na camada Silver Final.'
+    nk_cnae STRING COMMENT 'Código CNAE individual normalizado com sete dígitos.',
+    cnae_principal BOOLEAN COMMENT 'TRUE se o CNAE é principal; TRUE prevalece se também estiver na lista secundária.',
+    data_carga_etl TIMESTAMP COMMENT 'Timestamp de processamento na Silver Final.'
 )
 USING DELTA
-COMMENT 'Camada Silver Final: Tabela Ponte (Bridge) resolvendo a relação N:N entre Grupos de CNAE e CNAEs individuais.';
+COMMENT 'Silver Final: ponte N:N entre combinações de CNAEs e CNAEs individuais.';
 
-INSERT OVERWRITE tcc_receita.silver_final.ponte_cnae
+INSERT OVERWRITE tcc_receita.silver_final.ponte_cnae (
+    sk_grupo_cnae, sk_cnae, nk_grupo_cnae, nk_cnae,
+    cnae_principal, data_carga_etl
+)
 WITH primarios AS (
-    SELECT 
+    SELECT
         sk_grupo_cnae,
         nk_grupo_cnae,
-        LPAD(REGEXP_REPLACE(TRIM(cnae_primario), '[^0-9]', ''), 7, '0') AS nk_cnae,
+        cnae_primario AS nk_cnae,
         TRUE AS cnae_principal
     FROM tcc_receita.silver_final.dim_grupo_cnae
-    WHERE sk_grupo_cnae != -1 
-      AND cnae_primario IS NOT NULL
+    WHERE sk_grupo_cnae <> -1
+      AND cnae_primario RLIKE '^[0-9]{7}$'
 ),
 secundarios AS (
-    SELECT 
-        sk_grupo_cnae,
-        nk_grupo_cnae,
-        LPAD(REGEXP_REPLACE(TRIM(cnae_item), '[^0-9]', ''), 7, '0') AS nk_cnae,
+    SELECT
+        g.sk_grupo_cnae,
+        g.nk_grupo_cnae,
+        TRIM(item.cnae_item) AS nk_cnae,
         FALSE AS cnae_principal
-    FROM tcc_receita.silver_final.dim_grupo_cnae
-    LATERAL VIEW EXPLODE(SPLIT(lista_cnaes_secundarios, ',')) t AS cnae_item
-    WHERE sk_grupo_cnae != -1 
-      AND lista_cnaes_secundarios IS NOT NULL 
-      AND TRIM(cnae_item) != ''
+    FROM tcc_receita.silver_final.dim_grupo_cnae g
+    LATERAL VIEW EXPLODE(SPLIT(g.lista_cnaes_secundarios, ',')) item AS cnae_item
+    WHERE g.sk_grupo_cnae <> -1
+      AND g.lista_cnaes_secundarios IS NOT NULL
+      AND TRIM(item.cnae_item) RLIKE '^[0-9]{7}$'
 ),
-uniao AS (
+relacoes AS (
     SELECT * FROM primarios
     UNION ALL
-    SELECT * FROM secundarios WHERE nk_cnae IS NOT NULL AND nk_cnae != ''
+    SELECT * FROM secundarios
 ),
-ponte_enriquecida AS (
-    SELECT /*+ BROADCAST(d) */
-        u.sk_grupo_cnae,
-        COALESCE(d.sk_cnae, CAST(-1 AS BIGINT)) AS sk_cnae,
-        u.nk_grupo_cnae,
-        u.nk_cnae,
-        MAX(u.cnae_principal) AS cnae_principal,
-        NOW() AS data_carga_etl
-    FROM uniao u
-    LEFT JOIN tcc_receita.silver_final.dim_cnae d 
-        ON u.nk_cnae = d.nk_cnae
-    GROUP BY u.sk_grupo_cnae, COALESCE(d.sk_cnae, CAST(-1 AS BIGINT)), u.nk_grupo_cnae, u.nk_cnae
-),
-ghost_row AS (
+consolidadas AS (
     SELECT
-        CAST(-1 AS BIGINT) AS sk_grupo_cnae,
-        CAST(-1 AS BIGINT) AS sk_cnae,
-        'NAO_APLICAVEL' AS nk_grupo_cnae,
-        '0000000' AS nk_cnae,
-        FALSE AS cnae_principal,
-        NOW() AS data_carga_etl
+        r.sk_grupo_cnae,
+        COALESCE(c.sk_cnae, CAST(-2 AS BIGINT)) AS sk_cnae,
+        r.nk_grupo_cnae,
+        r.nk_cnae,
+        MAX(CAST(r.cnae_principal AS INT)) = 1 AS cnae_principal
+    FROM relacoes r
+    LEFT JOIN tcc_receita.silver_final.dim_cnae c
+        ON r.nk_cnae = c.nk_cnae
+    GROUP BY r.sk_grupo_cnae, COALESCE(c.sk_cnae, CAST(-2 AS BIGINT)),
+             r.nk_grupo_cnae, r.nk_cnae
+),
+sentinela AS (
+    SELECT CAST(-1 AS BIGINT) AS sk_grupo_cnae,
+           CAST(-1 AS BIGINT) AS sk_cnae,
+           '__NAO_APLICAVEL__' AS nk_grupo_cnae,
+           '__NAO_APLICAVEL__' AS nk_cnae,
+           FALSE AS cnae_principal,
+           CURRENT_TIMESTAMP() AS data_carga_etl
 )
-SELECT * FROM ghost_row
+SELECT * FROM sentinela
 UNION ALL
-SELECT * FROM ponte_enriquecida;
+SELECT
+    sk_grupo_cnae, sk_cnae, nk_grupo_cnae, nk_cnae,
+    cnae_principal, CURRENT_TIMESTAMP() AS data_carga_etl
+FROM consolidadas;

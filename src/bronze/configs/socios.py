@@ -17,17 +17,26 @@ PK_SOCIOS_EXPR = F.when(
     )
 )
 
+
+
 CONFIG = TabelaBronzeConfig(
     nome_tabela_uc="socios",
     pasta_s3="socio",
     chaves_primarias=["cnpj_basico", "cnpj_cpf_socio", "nome_socio_razao_social"],
     pk_custom_expr=PK_SOCIOS_EXPR,
+    is_snapshot_mensal = True,
     descricao_tabela="Camada Bronze: Quadro de Sócios e Administradores (QSA), detalhando o perfil, papel e entrada de cada membro na sociedade.",
     colunas_esperadas=[
         "cnpj_basico", "identificador_socio", "nome_socio_razao_social",
         "cnpj_cpf_socio", "qualificacao_socio", "data_entrada_sociedade",
         "pais", "representante_legal", "nome_representante",
         "qualificacao_representante_legal", "faixa_etaria"
+    ],
+    colunas_pk_custom_obrigatorias=[
+        "cnpj_basico",
+        "identificador_socio",
+        "cnpj_cpf_socio",
+        "nome_socio_razao_social"
     ],
     descricao_colunas={
         "cnpj_basico": "Radical do CNPJ (primeiros 8 dígitos) que identifica a raiz corporativa da entidade.",

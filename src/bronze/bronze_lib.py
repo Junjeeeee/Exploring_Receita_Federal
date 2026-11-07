@@ -9,10 +9,12 @@ import pyspark.sql.functions as F
 from src.bronze.data_quality import validar_schema, validar_volumetria
 
 DESCRICAO_COLUNAS_METADADOS: Dict[str, str] = {
-    "change_hash": "Metadado: Hash MD5 de todas as colunas brutas para deteção rigorosa de mutação (Change Data Capture).",
+    "change_hash": "Metadado: Hash SHA-256 serializado dos atributos de negócio usados na deteção de mudanças.",
     "pk": "Metadado: Chave primária lógica gerada pela concatenação dinâmica da granularidade da tabela.",
     "mes_referencia": "Metadado: Mês e ano de referência do snapshot extraído da Receita Federal (Partição).",
-    "bronze_processed_at": "Metadado: Timestamp de ingestão/reprocessamento do registo na camada Bronze."
+    "bronze_processed_at": "Metadado: Timestamp de ingestão/reprocessamento do registo na camada Bronze.",
+    "ingested_at": "Metadado: Timestamp de extração na Landing.",
+    "source_reference": "Metadado: Identificador da versão/referência da fonte de origem."
 }
 
 
@@ -27,6 +29,14 @@ class TabelaBronzeConfig:
     pk_custom_expr: Optional[Column] = None
     colunas_csv_para_ordenar: List[str] = field(default_factory=list)
     limite_queda_volumetria: float = 0.15
+    # False para dimensões estáticas armazenadas em .../<pasta_s3_landing>/dados.parquet.
+    is_snapshot_mensal: bool = True
+    # Permite que o nome físico na Landing difira do nome lógico na Bronze.
+    pasta_s3_landing: Optional[str] = None
+    # Lista explícita recomendada; se vazia, usa todas as colunas de negócio da origem.
+    colunas_hash: List[str] = field(default_factory=list)
+    # Obrigatório quando a PK customizada depende de campos específicos.
+    colunas_pk_custom_obrigatorias: List[str] = field(default_factory=list)
 
 
 def gerar_range_meses(mes_ini: Optional[str] = None, mes_fim: Optional[str] = None) -> List[str]:
@@ -77,100 +87,175 @@ def aplicar_comentarios_uc(spark: SparkSession, config: TabelaBronzeConfig, colu
             spark.sql(f"ALTER TABLE {nome_completo_tabela} ALTER COLUMN {col} COMMENT '{comentario_col}'")
 
 
-def ingerir_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_ini: Optional[str] = None, mes_fim: Optional[str] = None):
+def _obter_pasta_landing(config: TabelaBronzeConfig) -> str:
+    """Resolve o caminho Landing; permite override explícito por configuração."""
+    if config.pasta_s3_landing:
+        return config.pasta_s3_landing
+    aliases = {
+        "motivos": "motivos_situacao",
+        "naturezas": "naturezas_juridicas",
+        "qualificacoes": "qualificacoes_socios",
+    }
+    return aliases.get(config.pasta_s3, config.pasta_s3)
+
+
+def _colunas_de_negocio(df_raw, config: TabelaBronzeConfig) -> List[str]:
+    tecnicas = set(DESCRICAO_COLUNAS_METADADOS) | {
+        "ingested_at", "landing_ingested_at", "source_reference"
+    }
+    disponiveis = [c for c in df_raw.columns if c not in tecnicas]
+    if config.colunas_hash:
+        faltantes = set(config.colunas_hash) - set(df_raw.columns)
+        if faltantes:
+            raise ValueError(f"Colunas de hash ausentes em {config.nome_tabela_uc}: {sorted(faltantes)}")
+        return config.colunas_hash
+    return disponiveis
+
+
+def _normalizar_lista_csv(df, coluna: str):
+    """Normaliza espaços e remove itens vazios antes de ordenar uma lista CSV."""
+    return df.withColumn(
+        coluna,
+        F.when(
+            F.col(coluna).isNotNull() & (F.trim(F.col(coluna)) != ""),
+            F.concat_ws(",", F.array_sort(F.filter(
+                F.transform(F.split(F.col(coluna), ","), lambda x: F.trim(x)),
+                lambda x: x != ""
+            )))
+        ).otherwise(F.col(coluna))
+    )
+
+
+def _validar_componentes_pk(df, config: TabelaBronzeConfig):
+    if config.pk_custom_expr is not None and not config.colunas_pk_custom_obrigatorias:
+        raise ValueError(
+            f"A tabela {config.nome_tabela_uc} usa pk_custom_expr, mas não declarou "
+            "colunas_pk_custom_obrigatorias. Declare os campos mínimos que impedem "
+            "a criação de chaves artificiais a partir de valores ausentes."
+        )
+    obrigatorias = (
+        config.colunas_pk_custom_obrigatorias
+        if config.pk_custom_expr is not None
+        else config.chaves_primarias
+    )
+    faltantes = set(obrigatorias) - set(df.columns)
+    if faltantes:
+        raise ValueError(f"Componentes de PK ausentes em {config.nome_tabela_uc}: {sorted(faltantes)}")
+    for coluna in obrigatorias:
+        df = df.filter(
+            F.col(coluna).isNotNull() & (F.trim(F.col(coluna).cast("string")) != "")
+        )
+    return df
+
+
+def _adicionar_pk(df, config: TabelaBronzeConfig):
+    if config.pk_custom_expr is not None:
+        df = df.withColumn("pk", config.pk_custom_expr)
+    elif config.chaves_primarias:
+        partes = [F.trim(F.col(c).cast("string")) for c in config.chaves_primarias]
+        # JSON mantém separação inequívoca e preserva a distinção entre campos.
+        df = df.withColumn("pk", F.to_json(F.struct(*[
+            parte.alias(f"k{i}") for i, parte in enumerate(partes)
+        ])))
+    if config.chaves_primarias or config.pk_custom_expr is not None:
+        df = df.filter(F.col("pk").isNotNull() & (F.trim(F.col("pk")) != ""))
+    return df
+
+
+def _remover_duplicatas_ou_falhar(df, nome_tabela: str):
+    """Elimina cópias exatas; não escolhe arbitrariamente entre linhas conflitantes."""
+    df = df.dropDuplicates()
+    if "pk" not in df.columns:
+        return df
+    conflitos = (
+        df.groupBy("pk")
+        .agg(F.countDistinct("change_hash").alias("qtd_hashes"))
+        .filter(F.col("qtd_hashes") > 1)
+        .limit(10)
+        .collect()
+    )
+    if conflitos:
+        amostra = [r["pk"] for r in conflitos]
+        raise ValueError(
+            f"PK duplicada com conteúdo divergente em {nome_tabela}. "
+            f"Amostra de PKs: {amostra}. Nenhum registro foi descartado."
+        )
+    # Duplicatas com mesmo hash representam a mesma versão lógica da linha.
+    return df.dropDuplicates(["pk"])
+
+
+def ingerir_tabela_bronze(
+    spark: SparkSession,
+    config: TabelaBronzeConfig,
+    mes_ini: Optional[str] = None,
+    mes_fim: Optional[str] = None,
+):
     configurar_ambiente_unity_catalog(spark)
     nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
+    pasta_landing = _obter_pasta_landing(config)
     meses = gerar_range_meses(mes_ini, mes_fim)
     colunas_finais = []
+    bucket = obter_bucket_landing()
 
-    print(f"🚀 Iniciando Ingestão Bronze: {nome_completo_tabela} | Meses: {meses}")
+    if config.is_snapshot_mensal:
+        iteracoes = [(mes, f"s3://{bucket}/landing/receita_federal/{pasta_landing}/mes_referencia={mes}/") for mes in meses]
+    else:
+        # Fonte estática tem um único objeto, sem partição mes_referencia.
+        iteracoes = [(None, f"s3://{bucket}/landing/receita_federal/{pasta_landing}/dados.parquet")]
 
-    for mes_referencia in meses:
-        caminho_landing = (
-            f"s3://{obter_bucket_landing()}/landing/receita_federal/"
-            f"{config.pasta_s3}/mes_referencia={mes_referencia}/"
-        )
-        print(f"🔄 Lendo e transformando {config.nome_tabela_uc} (Mês: {mes_referencia})...")
-
+    print(f"🚀 Iniciando Ingestão Bronze: {nome_completo_tabela}")
+    for mes_referencia, caminho_landing in iteracoes:
+        rotulo = mes_referencia or "estática"
+        print(f"🔄 Lendo e transformando {config.nome_tabela_uc} ({rotulo})...")
         df_raw = spark.read.parquet(caminho_landing)
 
-        # 1. Validação Antecipada (Schema)
         if config.colunas_esperadas:
-            colunas_fonte = set(df_raw.columns)
-            colunas_esperadas = set(config.colunas_esperadas)
-            faltantes = colunas_esperadas - colunas_fonte
+            faltantes = set(config.colunas_esperadas) - set(df_raw.columns)
             if faltantes:
-                raise ValueError(f"FALHA DE QUALIDADE [SCHEMA]: As seguintes colunas obrigatórias estão ausentes no arquivo fonte: {faltantes}")
-
-        # Ordena listas separadas por vírgula (ex: CNAEs secundários) para evitar falso positivo no hash
-        for col_ord in config.colunas_csv_para_ordenar:
-            if col_ord in df_raw.columns:
-                df_raw = df_raw.withColumn(
-                    col_ord,
-                    F.when(
-                        F.col(col_ord).isNotNull() & (F.trim(F.col(col_ord)) != ""),
-                        F.concat_ws(",", F.array_sort(F.split(F.trim(F.col(col_ord)), ",")))
-                    ).otherwise(F.col(col_ord))
+                raise ValueError(
+                    f"Schema incompatível em {caminho_landing}: colunas ausentes {sorted(faltantes)}"
                 )
 
-        colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys()) | {"ingested_at", "landing_ingested_at"}
-        colunas_negocio = [c for c in df_raw.columns if c not in colunas_tecnicas]
-        
-        # Filtro rigoroso: descarta a linha se QUALQUER coluna da PK for nula original (somente se não usar expr customizada)
-        if config.pk_custom_expr is None and config.chaves_primarias:
-            df_transformado = df_raw.dropna(subset=config.chaves_primarias)
-            for col_pk in config.chaves_primarias:
-                df_transformado = df_transformado.filter(F.trim(F.col(col_pk)) != "")
+        for coluna in config.colunas_csv_para_ordenar:
+            if coluna in df_raw.columns:
+                df_raw = _normalizar_lista_csv(df_raw, coluna)
+
+        df_transformado = _validar_componentes_pk(df_raw, config)
+        colunas_negocio = _colunas_de_negocio(df_transformado, config)
+        if not colunas_negocio:
+            raise ValueError(f"Nenhuma coluna de negócio disponível para hash em {config.nome_tabela_uc}.")
+
+        # JSON estruturado evita colisões por delimitadores e diferencia NULL de string vazia.
+        payload_hash = F.to_json(
+            F.struct(*[F.col(c).cast("string").alias(c) for c in colunas_negocio]),
+            options={"ignoreNullFields": "false"},
+        )
+        df_transformado = df_transformado.withColumn("change_hash", F.sha2(payload_hash, 256))
+        df_transformado = _adicionar_pk(df_transformado, config)
+        df_transformado = _remover_duplicatas_ou_falhar(df_transformado, nome_completo_tabela)
+
+        if mes_referencia is not None:
+            df_bronze = df_transformado.withColumn("mes_referencia", F.lit(mes_referencia))
         else:
-            df_transformado = df_raw
+            df_bronze = df_transformado
+        df_bronze = df_bronze.withColumn("bronze_processed_at", F.current_timestamp())
 
-        # Gera Hash MD5 apenas das colunas de negócio com UPPER e TRIM (Trata nulos como 'NULL' para o hash)
-        expr_hash = F.md5(F.concat_ws("||", *[
-            F.coalesce(F.trim(F.upper(F.col(c).cast("string"))), F.lit("NULL"))
-            for c in colunas_negocio
-        ]))
-        df_transformado = df_transformado.withColumn("change_hash", expr_hash)
+        # Preserva source_reference para rastrear a versão de origem; remove apenas timestamp técnico da Landing.
+        for coluna_tecnica in ("ingested_at", "landing_ingested_at"):
+            if coluna_tecnica in df_bronze.columns:
+                df_bronze = df_bronze.drop(coluna_tecnica)
 
-        # Aplica expressão customizada de PK (se existir) ou concatena chaves_primarias (usando delimitador |)
-        if config.pk_custom_expr is not None:
-            df_transformado = df_transformado.withColumn("pk", config.pk_custom_expr)
-            # Remove PKs resultantes nulas ou vazias da expr customizada
-            df_transformado = df_transformado.filter(F.col("pk").isNotNull() & (F.trim(F.col("pk")) != ""))
-        elif config.chaves_primarias:
-            if len(config.chaves_primarias) > 1:
-                df_transformado = df_transformado.withColumn("pk", F.concat_ws("|", *[F.trim(F.col(c)) for c in config.chaves_primarias]))
-            else:
-                df_transformado = df_transformado.withColumn("pk", F.trim(F.col(config.chaves_primarias[0])).cast("string"))
-
-        # Dedup lazy evaluation
-        df_transformado = df_transformado.dropDuplicates(["pk"])
-
-        df_bronze = (
-            df_transformado
-            .withColumn("mes_referencia", F.lit(mes_referencia))
-            .withColumn("bronze_processed_at", F.current_timestamp())
-        )
-
-        if "ingested_at" in df_bronze.columns:
-            df_bronze = df_bronze.drop("ingested_at")
-        if "landing_ingested_at" in df_bronze.columns:
-            df_bronze = df_bronze.drop("landing_ingested_at")
-
-        (
-            df_bronze.write
-            .format("delta")
-            .mode("overwrite")
-            .option("replaceWhere", f"mes_referencia = '{mes_referencia}'")
-            .option("mergeSchema", "true")
-            .partitionBy("mes_referencia")
-            .saveAsTable(nome_completo_tabela)
-        )
+        writer = df_bronze.write.format("delta").mode("overwrite").option("mergeSchema", "true")
+        if config.is_snapshot_mensal:
+            writer = writer.option("replaceWhere", f"mes_referencia = '{mes_referencia}'").partitionBy("mes_referencia")
+        writer.saveAsTable(nome_completo_tabela)
         colunas_finais = df_bronze.columns
 
     if colunas_finais:
-        aplicar_comentarios_uc(spark, config, colunas_finais)
+        # Usa o schema efetivamente persistido, não o último DataFrame em memória.
+        colunas_persistidas = spark.read.table(nome_completo_tabela).columns
+        aplicar_comentarios_uc(spark, config, colunas_persistidas)
     print(f"✅ Ingestão e documentação finalizadas: {nome_completo_tabela}\n")
-
 
 def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_ini: Optional[str] = None, mes_fim: Optional[str] = None):
     nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
@@ -178,7 +263,7 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
     print(f"🧪 Executando Data Quality: {nome_completo_tabela} | Meses: {meses}")
 
     df_tabela = spark.read.table(nome_completo_tabela)
-    colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys())
+    colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys()) | {"source_reference", "ingested_at", "landing_ingested_at"}
     colunas_raw = [c for c in df_tabela.columns if c not in colunas_tecnicas]
 
     for mes_referencia in meses:

@@ -4,6 +4,7 @@ CONFIG = TabelaBronzeConfig(
     nome_tabela_uc="empresas",
     pasta_s3="empresa",
     chaves_primarias=["cnpj_basico"],
+    is_snapshot_mensal = True,
     descricao_tabela="Camada Bronze: Dados cadastrais da raiz do CNPJ (Empresa), incluindo razão social, capital social e porte.",
     colunas_esperadas=[
         "cnpj_basico", "razao_social", "natureza_juridica",
