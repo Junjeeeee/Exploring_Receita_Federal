@@ -68,7 +68,7 @@ USING (
         SELECT b.*,
                ROW_NUMBER() OVER (
                    PARTITION BY b.pk, b.mes_referencia
-                   ORDER BY b.bronze_processed_at DESC NULLS LAST
+                   ORDER BY b.bronze_processed_at DESC NULLS LAST, b.change_hash DESC  -- PK repetida na Receita: desempate determinístico (B16)
                ) AS rn
         FROM tcc_receita.bronze.estabelecimentos b
         INNER JOIN pks_afetadas a ON b.pk = a.pk

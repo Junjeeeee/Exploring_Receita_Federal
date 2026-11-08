@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from typing import Dict, List, Optional
-from pyspark.sql import Column, SparkSession, Window
+from pyspark.sql import Column, SparkSession
 import pyspark.sql.functions as F
 from src.bronze.data_quality import validar_schema, validar_volumetria
 
@@ -163,36 +163,16 @@ def _adicionar_pk(df, config: TabelaBronzeConfig):
     return df
 
 
-def _resolver_duplicatas(df, nome_tabela: str, mes_referencia: Optional[str]):
-    """Elimina cópias exatas e resolve PKs repetidas com conteúdo divergente.
-
-    A Receita publica algumas chaves repetidas com conteúdo diferente (ex.: mesmo cnpj_basico duas
-    vezes em empresas). Para a SCD2 não oscilar entre as versões a cada mês, fica a linha de maior
-    `change_hash` (escolha arbitrária, porém determinística e estável) e TODAS as linhas conflitantes
-    vão para `<tabela>__conflitos_pk`, para auditoria. Ver backlog B16.
-    """
+def _remover_copias_exatas(df, nome_tabela: str):
+    """Remove só cópias idênticas. PKs repetidas com conteúdo divergente (a Receita publica algumas)
+    são MANTIDAS: escolher uma versão é regra de negócio e fica na Silver (ROW_NUMBER por pk/mês com
+    desempate por change_hash). Aqui apenas registramos quantas há. Ver backlog B16."""
     df = df.dropDuplicates()
-    if "pk" not in df.columns:
-        return df
-    pks_conflito = (
-        df.groupBy("pk")
-        .agg(F.countDistinct("change_hash").alias("qtd_versoes"))
-        .filter(F.col("qtd_versoes") > 1)
-    )
-    conflitos = df.join(pks_conflito, "pk", "inner")
-    qtd_pks = pks_conflito.count()
-    if qtd_pks:
-        tabela_conflitos = f"{nome_tabela}__conflitos_pk"
-        writer = (conflitos.withColumn("mes_referencia", F.lit(mes_referencia or "estatica"))
-                  .withColumn("bronze_processed_at", F.current_timestamp())
-                  .write.format("delta").mode("overwrite").option("mergeSchema", "true"))
-        if mes_referencia is not None:
-            writer = writer.option("replaceWhere", f"mes_referencia = '{mes_referencia}'")
-        writer.saveAsTable(tabela_conflitos)
-        print(f"  ⚠️ {qtd_pks} PK(s) com conteúdo divergente: mantida a linha de maior change_hash; "
-              f"todas as versões em {tabela_conflitos}.")
-    janela = Window.partitionBy("pk").orderBy(F.col("change_hash").desc())
-    return df.withColumn("_rn", F.row_number().over(janela)).filter("_rn = 1").drop("_rn")
+    if "pk" in df.columns:
+        qtd = df.groupBy("pk").count().filter("count > 1").count()
+        if qtd:
+            print(f"  ⚠️ {qtd} PK(s) repetidas com conteúdo divergente em {nome_tabela} (mantidas; a Silver desempata).")
+    return df
 
 
 def ingerir_tabela_bronze(
@@ -243,7 +223,7 @@ def ingerir_tabela_bronze(
         )
         df_transformado = df_transformado.withColumn("change_hash", F.sha2(payload_hash, 256))
         df_transformado = _adicionar_pk(df_transformado, config)
-        df_transformado = _resolver_duplicatas(df_transformado, nome_completo_tabela, mes_referencia)
+        df_transformado = _remover_copias_exatas(df_transformado, nome_completo_tabela)
 
         if mes_referencia is not None:
             df_bronze = df_transformado.withColumn("mes_referencia", F.lit(mes_referencia))
