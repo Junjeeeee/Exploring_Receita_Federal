@@ -24,3 +24,4 @@ venv/
 
 # Diagnósticos locais da landing
 tmp_receita/
+.claude/settings.local.json
