@@ -245,7 +245,7 @@ dim_enriquecida AS (
         COALESCE(qual.descricao, u.qualificacao_responsavel) AS qualificacao_responsavel,
         u.opcao_pelo_mei_bool AS opcao_pelo_mei,
         u.opcao_pelo_simples_bool AS opcao_pelo_simples,
-        try_to_date(u.data_inicio_atividade, 'yyyyMMdd') AS data_inicio_atividade,
+        CAST(try_to_timestamp(u.data_inicio_atividade, 'yyyyMMdd') AS DATE) AS data_inicio_atividade,
         u.nome_fantasia AS nome_fantasia_matriz,
         u.situacao_cadastral_desc AS situacao_cadastral_matriz,
         COALESCE(mot.descricao, u.motivo_situacao_cadastral) AS motivo_situacao_cadastral,

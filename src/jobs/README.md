@@ -15,7 +15,7 @@ Pipeline completo (bronze → silver_intermediate → silver_final → gold) num
 | `aws_attributes.instance_profile_arn` | Ausente por padrão (acesso ao S3 via **external location** do Unity Catalog). Se usar *instance profile*, adicionar `instance_profile_arn: arn:aws:iam::<conta>:instance-profile/<nome>` em `aws_attributes`. |
 | `spark_env_vars.AWS_BUCKET_NAME` | Nome do bucket da landing. |
 | `node_type_id` / `autoscale` | Ponto de partida: workers `r5d.xlarge` (memória p/ SCD2 de estabelecimentos) spot, 1–4. Driver on-demand (`first_on_demand: 1`) para o spot não derrubar o run. |
-| `spark_version` | 15.4 LTS (Spark 3.5). Em 17.x (Spark 4) o ANSI vem ligado — o código já usa `try_to_date`, mas é a versão menos testada. |
+| `spark_version` | 15.4 LTS (Spark 3.5). Em 17.x (Spark 4) o ANSI vem ligado — o código usa `CAST(try_to_timestamp(x, 'yyyyMMdd') AS DATE)` (existe desde Spark 3.4; `try_to_date` só no Spark 4), mas é a versão menos testada. |
 
 ## Controle de custo
 - `timeout_seconds: 14400` (4 h) corta runs travados; `max_concurrent_runs: 1`.

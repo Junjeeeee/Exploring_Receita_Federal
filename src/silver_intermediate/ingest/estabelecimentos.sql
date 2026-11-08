@@ -92,11 +92,11 @@ USING (
                 WHEN TRIM(situacao_cadastral) IN ('01', '1') THEN 'NULA'
                 ELSE NULL
             END AS situacao_cadastral_desc,
-            CASE WHEN try_to_date(TRIM(data_situacao_cadastral), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_situacao_cadastral) ELSE NULL END AS data_situacao_cadastral,
+            CASE WHEN CAST(try_to_timestamp(TRIM(data_situacao_cadastral), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_situacao_cadastral) ELSE NULL END AS data_situacao_cadastral,
             NULLIF(TRIM(motivo_situacao_cadastral), '') AS motivo_situacao_cadastral,
             NULLIF(TRIM(nome_cidade_exterior), '') AS nome_cidade_exterior,
             NULLIF(TRIM(pais), '') AS pais,
-            CASE WHEN try_to_date(TRIM(data_inicio_atividade), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_inicio_atividade) ELSE NULL END AS data_inicio_atividade,
+            CASE WHEN CAST(try_to_timestamp(TRIM(data_inicio_atividade), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_inicio_atividade) ELSE NULL END AS data_inicio_atividade,
             NULLIF(TRIM(cnae_fiscal_principal), '') AS cnae_fiscal_principal,
             NULLIF(TRIM(cnae_fiscal_secundaria), '') AS cnae_fiscal_secundaria,
             NULLIF(TRIM(tipo_logradouro), '') AS tipo_logradouro,
@@ -129,7 +129,7 @@ USING (
             NULLIF(TRIM(fax), '') AS fax,
             NULLIF(TRIM(correio_eletronico), '') AS correio_eletronico,
             NULLIF(TRIM(situacao_especial), '') AS situacao_especial,
-            CASE WHEN try_to_date(TRIM(data_situacao_especial), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_situacao_especial) ELSE NULL END AS data_situacao_especial,
+            CASE WHEN CAST(try_to_timestamp(TRIM(data_situacao_especial), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_situacao_especial) ELSE NULL END AS data_situacao_especial,
             mes_referencia,
             bronze_processed_at AS inserted_at,
             change_hash
