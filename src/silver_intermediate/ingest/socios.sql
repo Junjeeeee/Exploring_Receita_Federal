@@ -1,7 +1,9 @@
 -- Silver Intermediate: histórico SCD2 do QSA (relação empresa-sócio).
 -- IMPORTANTE: para detectar saída do QSA, este SQL compara cada snapshot mensal com o snapshot
 -- imediatamente anterior. A Bronze precisa conter o mês anterior a mes_ini e TODOS os meses
--- da janela, completos. Veja README.md antes da primeira execução.
+-- da janela, completos. Exceção (carga inicial): se mes_ini for o primeiro mês existente na Bronze
+-- (2023-05, primeiro snapshot publicado pela RFB), não há mês anterior; o mês só abre as versões e
+-- nenhuma saída do QSA é inferida nele. Veja README.md antes da primeira execução.
 -- A PK é herdada da Bronze; nenhum CPF/CNPJ em claro é reconstruído aqui.
 
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_intermediate;
@@ -37,7 +39,9 @@ USING (
     WITH params AS (
         SELECT
             COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')) AS mes_ini,
-            COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim
+            COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim,
+            -- Primeiro snapshot disponível: janela iniciando nele é carga inicial (sem mês anterior).
+            (SELECT MIN(mes_referencia) FROM tcc_receita.bronze.socios) AS primeiro_mes_bronze
     ),
     bronze_raw AS (
         SELECT b.*,
@@ -64,12 +68,13 @@ USING (
                 COUNT(DISTINCT b.mes_referencia) = CAST(MONTHS_BETWEEN(
                     TO_DATE(CONCAT(p.mes_fim, '-01')),
                     TO_DATE(CONCAT(p.mes_ini, '-01'))
-                ) AS INT) + 2,
-                'Snapshots Bronze de socios ausentes: é necessário o mês anterior ao início e todos os meses da janela.'
+                ) AS INT) + 1
+                  + CASE WHEN p.mes_ini > p.primeiro_mes_bronze THEN 1 ELSE 0 END,
+                'Snapshots Bronze de socios ausentes: é necessário o mês anterior ao início (exceto na carga inicial) e todos os meses da janela.'
             ) AS snapshots_validos
         FROM bronze_raw b
         CROSS JOIN params p
-        GROUP BY p.mes_ini, p.mes_fim
+        GROUP BY p.mes_ini, p.mes_fim, p.primeiro_mes_bronze
     ),
     bronze_limpo AS (
         SELECT
