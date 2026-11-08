@@ -287,9 +287,15 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
 
         # 3. Validação de Hash e PK não nulos
         # Utilizando agregação única para evitar múltiplos counts
+        # Tabelas sem PK (ex.: ceps) não têm a coluna pk.
+        tem_pk = "pk" in df_mes.columns
+        nulos_pk_expr = (
+            F.sum(F.when(F.col("pk").isNull() | (F.trim(F.col("pk")) == ""), 1).otherwise(0))
+            if tem_pk else F.lit(0)
+        )
         res = df_mes.select(
             F.sum(F.when(F.col("change_hash").isNull(), 1).otherwise(0)).alias("nulos_hash"),
-            F.sum(F.when(F.col("pk").isNull() | (F.trim(F.col("pk")) == ""), 1).otherwise(0)).alias("nulos_pk")
+            nulos_pk_expr.alias("nulos_pk"),
         ).collect()[0]
 
         if res["nulos_hash"] > 0:
