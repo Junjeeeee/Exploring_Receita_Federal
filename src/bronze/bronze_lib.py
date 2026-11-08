@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from typing import Dict, List, Optional
-from pyspark.sql import Column, SparkSession
+from pyspark.sql import Column, SparkSession, Window
 import pyspark.sql.functions as F
 from src.bronze.data_quality import validar_schema, validar_volumetria
 
@@ -163,26 +163,36 @@ def _adicionar_pk(df, config: TabelaBronzeConfig):
     return df
 
 
-def _remover_duplicatas_ou_falhar(df, nome_tabela: str):
-    """Elimina cópias exatas; não escolhe arbitrariamente entre linhas conflitantes."""
+def _resolver_duplicatas(df, nome_tabela: str, mes_referencia: Optional[str]):
+    """Elimina cópias exatas e resolve PKs repetidas com conteúdo divergente.
+
+    A Receita publica algumas chaves repetidas com conteúdo diferente (ex.: mesmo cnpj_basico duas
+    vezes em empresas). Para a SCD2 não oscilar entre as versões a cada mês, fica a linha de maior
+    `change_hash` (escolha arbitrária, porém determinística e estável) e TODAS as linhas conflitantes
+    vão para `<tabela>__conflitos_pk`, para auditoria. Ver backlog B16.
+    """
     df = df.dropDuplicates()
     if "pk" not in df.columns:
         return df
-    conflitos = (
+    pks_conflito = (
         df.groupBy("pk")
-        .agg(F.countDistinct("change_hash").alias("qtd_hashes"))
-        .filter(F.col("qtd_hashes") > 1)
-        .limit(10)
-        .collect()
+        .agg(F.countDistinct("change_hash").alias("qtd_versoes"))
+        .filter(F.col("qtd_versoes") > 1)
     )
-    if conflitos:
-        amostra = [r["pk"] for r in conflitos]
-        raise ValueError(
-            f"PK duplicada com conteúdo divergente em {nome_tabela}. "
-            f"Amostra de PKs: {amostra}. Nenhum registro foi descartado."
-        )
-    # Duplicatas com mesmo hash representam a mesma versão lógica da linha.
-    return df.dropDuplicates(["pk"])
+    conflitos = df.join(pks_conflito, "pk", "inner")
+    qtd_pks = pks_conflito.count()
+    if qtd_pks:
+        tabela_conflitos = f"{nome_tabela}__conflitos_pk"
+        writer = (conflitos.withColumn("mes_referencia", F.lit(mes_referencia or "estatica"))
+                  .withColumn("bronze_processed_at", F.current_timestamp())
+                  .write.format("delta").mode("overwrite").option("mergeSchema", "true"))
+        if mes_referencia is not None:
+            writer = writer.option("replaceWhere", f"mes_referencia = '{mes_referencia}'")
+        writer.saveAsTable(tabela_conflitos)
+        print(f"  ⚠️ {qtd_pks} PK(s) com conteúdo divergente: mantida a linha de maior change_hash; "
+              f"todas as versões em {tabela_conflitos}.")
+    janela = Window.partitionBy("pk").orderBy(F.col("change_hash").desc())
+    return df.withColumn("_rn", F.row_number().over(janela)).filter("_rn = 1").drop("_rn")
 
 
 def ingerir_tabela_bronze(
@@ -233,7 +243,7 @@ def ingerir_tabela_bronze(
         )
         df_transformado = df_transformado.withColumn("change_hash", F.sha2(payload_hash, 256))
         df_transformado = _adicionar_pk(df_transformado, config)
-        df_transformado = _remover_duplicatas_ou_falhar(df_transformado, nome_completo_tabela)
+        df_transformado = _resolver_duplicatas(df_transformado, nome_completo_tabela, mes_referencia)
 
         if mes_referencia is not None:
             df_bronze = df_transformado.withColumn("mes_referencia", F.lit(mes_referencia))
