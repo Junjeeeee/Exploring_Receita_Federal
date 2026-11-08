@@ -4,6 +4,7 @@ CONFIG = TabelaBronzeConfig(
     nome_tabela_uc="dados_simples",
     pasta_s3="simples",
     chaves_primarias=["cnpj_basico"],
+    is_snapshot_mensal = True,
     descricao_tabela="Camada Bronze: Informações sobre a adesão e exclusão de empresas aos regimes do Simples Nacional e MEI.",
     colunas_esperadas=[
         "cnpj_basico", "opcao_pelo_simples", "data_opcao_simples",

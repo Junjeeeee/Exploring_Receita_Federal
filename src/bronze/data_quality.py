@@ -35,7 +35,15 @@ def validar_volumetria(spark, df, nome_tabela_uc, mes_referencia, threshold_qued
     spark.sql(f"CREATE TABLE IF NOT EXISTS {log_table} (tabela STRING, mes_referencia STRING, contagem BIGINT, verificado_em TIMESTAMP)")
     
     try:
-        media_df = spark.sql(f"SELECT AVG(contagem) as media FROM {log_table} WHERE tabela = '{nome_tabela_uc}' AND mes_referencia != '{mes_referencia}'").collect()[0]
+        # Compara só com os até 3 meses ANTERIORES: a base cresce com o tempo, e incluir meses
+        # futuros (backfill fora de ordem) faria meses antigos parecerem quedas.
+        media_df = spark.sql(f"""
+            SELECT AVG(contagem) AS media FROM (
+                SELECT contagem FROM {log_table}
+                WHERE tabela = '{nome_tabela_uc}' AND mes_referencia < '{mes_referencia}'
+                ORDER BY mes_referencia DESC LIMIT 3
+            )
+        """).collect()[0]
         media_historica = media_df['media'] if media_df['media'] is not None else 0
         
         if media_historica > 0:

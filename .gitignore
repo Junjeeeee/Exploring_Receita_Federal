@@ -21,3 +21,6 @@ venv/
 
 # Arquivos de configuração de ambiente
 .env
+
+# Diagnósticos locais da landing
+tmp_receita/

@@ -4,6 +4,7 @@ CONFIG = TabelaBronzeConfig(
     nome_tabela_uc="motivos_situacao",
     pasta_s3="motivos",
     chaves_primarias=["codigo"],
+    is_snapshot_mensal = False,
     descricao_tabela="Camada Bronze: Tabela de domínio com os códigos e descrições dos motivos da situação cadastral.",
     colunas_esperadas=["codigo", "descricao"],
     descricao_colunas={

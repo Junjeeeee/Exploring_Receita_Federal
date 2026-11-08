@@ -1,5 +1,5 @@
-from src.bronze.bronze_lib import executar_ingestao_cli
+from src.bronze.bronze_lib import executar_dq_cli
 from src.bronze.configs.estabelecimentos import CONFIG
 
 if __name__ == "__main__":
-    executar_ingestao_dq_cli(CONFIG)
+    executar_dq_cli(CONFIG)

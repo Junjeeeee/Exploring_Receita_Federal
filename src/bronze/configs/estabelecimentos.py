@@ -5,6 +5,7 @@ CONFIG = TabelaBronzeConfig(
     pasta_s3="estabele",
     chaves_primarias=["cnpj_basico", "cnpj_ordem", "cnpj_dv"],
     colunas_csv_para_ordenar=["cnae_fiscal_secundaria"],
+    is_snapshot_mensal = True,
     descricao_tabela="Camada Bronze: Dados das filiais/matrizes (Estabelecimentos), contendo morada, contactos e situação cadastral detalhada.",
     colunas_esperadas=[
         "cnpj_basico", "cnpj_ordem", "cnpj_dv", "identificador_matriz_filial",

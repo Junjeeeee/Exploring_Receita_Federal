@@ -4,6 +4,7 @@ CONFIG = TabelaBronzeConfig(
     nome_tabela_uc="cnaes_ibge",
     pasta_s3="cnaes_ibge",
     chaves_primarias=["codigo"],
+    is_snapshot_mensal = False,
     descricao_tabela="Camada Bronze: Hierarquia oficial da CNAE extraída do IBGE (Seção, Divisão, Grupo, Classe e Subclasse).",
     colunas_esperadas=[
         "codigo", "descricao", "secao", "nome_secao",
