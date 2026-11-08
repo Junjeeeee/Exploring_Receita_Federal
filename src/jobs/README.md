@@ -23,16 +23,20 @@ Pipeline completo (bronze → silver_intermediate → silver_final → gold) num
 - Para depurar uma etapa: *Repair run* só da task que falhou (o cluster sobe uma vez para o repair).
 - Sugestão: criar um **budget/alerta** na conta AWS e em *Account console → Budgets* do Databricks.
 
-## Tasks
+## Tasks (53, geradas)
 
-| Task | Executa |
+O YAML é **gerado** por `python -m src.jobs.gerar_job` (não editar à mão). Uma task de ingestão e uma de DQ
+por tabela; as dependências saem dos próprios SQL (tabelas `tcc_receita.*` lidas/escritas). Design e
+decisões: `docs/specs/features/job-databricks.md`.
+
+| Prefixo | Executa |
 |---|---|
-| `bronze_estaticas` ∥ `bronze_mensais` | `run_bronze.py` (ingestão + DQ) |
-| `silver_int_scd2` | 4 SCD2 + DQ |
-| `silver_int_eventos` | `log_eventos_negocio` + DQ |
-| `silver_final_dims` | `dim_cnae`, `dim_grupo_cnae`, `ponte_cnae`, `dim_tempo`, `dim_mudanca_estado`, `dim_empresa` + DQ |
-| `silver_final_fato` | `fato_mudanca_estado` + DQ |
-| `gold` | fatos, OBT, `dashboard_mercado_ativo`, coorte, views `ds_*`, `dq_gold` |
+| `bronze_<t>` → `bronze_dq_<t>` | `run_bronze.py --modo ingestao|dq` (11 tabelas, em paralelo) |
+| `si_<t>` → `si_dq_<t>` | SCD2 e `log_eventos_negocio` |
+| `sf_<t>` → `sf_dq_<t>` | dimensões, ponte e `fato_mudanca_estado` |
+| `gold_<t>`, `gold_dq_gold` | fatos, OBT, mercado ativo, coorte, views `ds_*` |
+
+Ao mudar um SQL (nova tabela lida, novo arquivo), rode o gerador e cole o YAML de novo na UI.
 
 Fora do Job: `ds_micro_*.sql` são consultas do dashboard (parâmetros `:param_*`); `migracao_socios.sql`
 (legado) e `vw_dashboard_eventos_cnae.sql` (sem consumidor) não rodam.

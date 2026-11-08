@@ -1,5 +1,5 @@
-# Job Databricks do TCC (formato YAML da UI: Workflows → Job → ⋮ → Edit as YAML).
-# Mesmo formato de recurso do Databricks Asset Bundles (resources.jobs.<chave>).
+# GERADO por src/jobs/gerar_job.py — não editar à mão (rode `python -m src.jobs.gerar_job`).
+# Formato da UI (Workflows → Job → ⋮ → Edit as YAML) / Asset Bundles (resources.jobs.<chave>).
 # Campos a ajustar no workspace: ver src/jobs/README.md.
 resources:
   jobs:
@@ -34,103 +34,815 @@ resources:
           spark_conf:
             spark.sql.shuffle.partitions: "auto"
             spark.databricks.delta.optimizeWrite.enabled: "true"
+            spark.scheduler.mode: "FAIR"
           spark_env_vars:
             AWS_BUCKET_NAME: lakehouse-receita
           custom_tags:
             projeto: tcc_receita
       tasks:
-      - task_key: bronze_estaticas
+      - task_key: bronze_cnaes_ibge
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_bronze.py
           source: GIT
           parameters:
+          - --modo
+          - ingestao
           - --tabelas
-          - ESTATICAS
+          - cnaes_ibge
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
-      - task_key: bronze_mensais
+      - task_key: bronze_dq_cnaes_ibge
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_bronze.py
           source: GIT
           parameters:
+          - --modo
+          - dq
           - --tabelas
-          - MENSAIS
+          - cnaes_ibge
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
-      - task_key: silver_int_scd2
+        depends_on:
+        - task_key: bronze_cnaes_ibge
+      - task_key: bronze_paises
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - paises
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_paises
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - paises
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_paises
+      - task_key: bronze_municipios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - municipios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_municipios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - municipios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_municipios
+      - task_key: bronze_naturezas_juridicas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - naturezas_juridicas
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_naturezas_juridicas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - naturezas_juridicas
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_naturezas_juridicas
+      - task_key: bronze_qualificacoes_socios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - qualificacoes_socios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_qualificacoes_socios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - qualificacoes_socios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_qualificacoes_socios
+      - task_key: bronze_motivos_situacao
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - motivos_situacao
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_motivos_situacao
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - motivos_situacao
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_motivos_situacao
+      - task_key: bronze_ceps
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - ceps
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_ceps
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - ceps
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_ceps
+      - task_key: bronze_empresas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - empresas
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_empresas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - empresas
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_empresas
+      - task_key: bronze_estabelecimentos
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - estabelecimentos
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_estabelecimentos
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - estabelecimentos
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_estabelecimentos
+      - task_key: bronze_socios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - socios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_socios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - socios
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_socios
+      - task_key: bronze_dados_simples
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - ingestao
+          - --tabelas
+          - dados_simples
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_dq_dados_simples
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --modo
+          - dq
+          - --tabelas
+          - dados_simples
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_dados_simples
+      - task_key: si_empresas
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_sql.py
           source: GIT
           parameters:
           - --arquivos
-          - src/silver_intermediate/ingest/empresas.sql,src/silver_intermediate/ingest/estabelecimentos.sql,src/silver_intermediate/ingest/dados_simples.sql,src/silver_intermediate/ingest/socios.sql,src/silver_intermediate/tests/dq_empresas.sql,src/silver_intermediate/tests/dq_estabelecimentos.sql,src/silver_intermediate/tests/dq_dados_simples.sql,src/silver_intermediate/tests/dq_socios.sql
+          - src/silver_intermediate/ingest/empresas.sql
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: bronze_estaticas
-        - task_key: bronze_mensais
-      - task_key: silver_int_eventos
+        - task_key: bronze_dq_empresas
+      - task_key: si_estabelecimentos
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_sql.py
           source: GIT
           parameters:
           - --arquivos
-          - src/silver_intermediate/ingest/log_eventos_negocio.sql,src/silver_intermediate/tests/dq_log_eventos_negocio.sql
+          - src/silver_intermediate/ingest/estabelecimentos.sql
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: silver_int_scd2
-      - task_key: silver_final_dims
+        - task_key: bronze_dq_estabelecimentos
+      - task_key: si_dados_simples
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_sql.py
           source: GIT
           parameters:
           - --arquivos
-          - src/silver_final/ingest/dim_cnae.sql,src/silver_final/ingest/dim_grupo_cnae.sql,src/silver_final/ingest/ponte_cnae.sql,src/silver_final/ingest/dim_tempo.sql,src/silver_final/ingest/dim_mudanca_estado.sql,src/silver_final/ingest/dim_empresa.sql,src/silver_final/tests/dq_dim_cnae.sql,src/silver_final/tests/dq_dim_grupo_cnae.sql,src/silver_final/tests/dq_ponte_cnae.sql,src/silver_final/tests/dq_dim_mucanca_estado.sql,src/silver_final/tests/dq_dim_empresa.sql
+          - src/silver_intermediate/ingest/dados_simples.sql
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: silver_int_eventos
-      - task_key: silver_final_fato
+        - task_key: bronze_dq_dados_simples
+      - task_key: si_socios
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_sql.py
           source: GIT
           parameters:
           - --arquivos
-          - src/silver_final/ingest/fato_mudanca_estado.sql,src/silver_final/tests/dq_fato_mudanca_estado.sql
+          - src/silver_intermediate/ingest/socios.sql
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: silver_final_dims
-      - task_key: gold
+        - task_key: bronze_dq_socios
+      - task_key: si_log_eventos_negocio
         job_cluster_key: cluster_pipeline
         spark_python_task:
           python_file: src/jobs/run_sql.py
           source: GIT
           parameters:
           - --arquivos
-          - src/gold/fato_indicadores_macro_mes.sql,src/gold/obt_dashboard_eventos.sql,src/gold/dashboard_mercado_ativo.sql,src/gold/d_coorte_sobrevivencia.sql,src/gold/fato_empresa_mes.sql,src/gold/ds_visao_macro.sql,src/gold/fato_indicadores_setoriais_mes.sql,src/gold/dq/dq_gold.sql
+          - src/silver_intermediate/ingest/log_eventos_negocio.sql
           - --mes_referencia_inicial
           - "{{job.parameters.mes_referencia_inicial}}"
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: silver_final_fato
+        - task_key: bronze_dq_motivos_situacao
+        - task_key: si_dq_dados_simples
+        - task_key: si_dq_empresas
+        - task_key: si_dq_estabelecimentos
+        - task_key: si_dq_socios
+      - task_key: sf_dim_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_dq_cnaes_ibge
+      - task_key: sf_dim_grupo_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_grupo_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_dq_estabelecimentos
+      - task_key: sf_ponte_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/ponte_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dq_dim_cnae
+        - task_key: sf_dq_dim_grupo_cnae
+      - task_key: sf_dim_tempo
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_tempo.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_dq_log_eventos_negocio
+      - task_key: sf_dim_mudanca_estado
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_mudanca_estado.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_dq_log_eventos_negocio
+      - task_key: sf_dim_empresa
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_empresa.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_dq_ceps
+        - task_key: bronze_dq_motivos_situacao
+        - task_key: bronze_dq_municipios
+        - task_key: bronze_dq_naturezas_juridicas
+        - task_key: bronze_dq_qualificacoes_socios
+        - task_key: sf_dq_dim_grupo_cnae
+        - task_key: si_dq_dados_simples
+        - task_key: si_dq_empresas
+        - task_key: si_dq_estabelecimentos
+      - task_key: sf_fato_mudanca_estado
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/fato_mudanca_estado.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_tempo
+        - task_key: sf_dq_dim_empresa
+        - task_key: sf_dq_dim_mucanca_estado
+        - task_key: si_dq_dados_simples
+        - task_key: si_dq_empresas
+        - task_key: si_dq_estabelecimentos
+        - task_key: si_dq_log_eventos_negocio
+        - task_key: si_dq_socios
+      - task_key: gold_fato_indicadores_macro_mes
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/fato_indicadores_macro_mes.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: gold_obt_dashboard_eventos
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/obt_dashboard_eventos.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_tempo
+        - task_key: sf_dq_dim_cnae
+        - task_key: sf_dq_dim_empresa
+        - task_key: sf_dq_dim_mucanca_estado
+        - task_key: sf_dq_fato_mudanca_estado
+        - task_key: sf_dq_ponte_cnae
+      - task_key: gold_dashboard_mercado_ativo
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/dashboard_mercado_ativo.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dq_dim_cnae
+        - task_key: sf_dq_dim_empresa
+        - task_key: sf_dq_ponte_cnae
+      - task_key: gold_d_coorte_sobrevivencia
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/d_coorte_sobrevivencia.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dq_dim_cnae
+        - task_key: sf_dq_dim_empresa
+        - task_key: sf_dq_ponte_cnae
+      - task_key: gold_fato_empresa_mes
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/fato_empresa_mes.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: gold_obt_dashboard_eventos
+        - task_key: sf_dim_tempo
+        - task_key: sf_dq_dim_cnae
+        - task_key: sf_dq_dim_empresa
+        - task_key: sf_dq_ponte_cnae
+      - task_key: gold_ds_visao_macro
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/ds_visao_macro.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: gold_fato_indicadores_macro_mes
+        - task_key: gold_obt_dashboard_eventos
+      - task_key: gold_fato_indicadores_setoriais_mes
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/fato_indicadores_setoriais_mes.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: gold_fato_empresa_mes
+        - task_key: gold_fato_indicadores_macro_mes
+      - task_key: si_dq_empresas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/tests/dq_empresas.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_empresas
+      - task_key: si_dq_estabelecimentos
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/tests/dq_estabelecimentos.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_estabelecimentos
+      - task_key: si_dq_dados_simples
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/tests/dq_dados_simples.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_dados_simples
+      - task_key: si_dq_socios
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/tests/dq_socios.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_socios
+      - task_key: si_dq_log_eventos_negocio
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/tests/dq_log_eventos_negocio.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: si_log_eventos_negocio
+      - task_key: sf_dq_dim_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_dim_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_cnae
+      - task_key: sf_dq_dim_grupo_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_dim_grupo_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_grupo_cnae
+      - task_key: sf_dq_ponte_cnae
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_ponte_cnae.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_cnae
+        - task_key: sf_dim_grupo_cnae
+        - task_key: sf_ponte_cnae
+      - task_key: sf_dq_dim_mucanca_estado
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_dim_mucanca_estado.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_mudanca_estado
+      - task_key: sf_dq_dim_empresa
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_dim_empresa.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_empresa
+        - task_key: sf_dim_grupo_cnae
+      - task_key: sf_dq_fato_mudanca_estado
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/tests/dq_fato_mudanca_estado.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: sf_dim_empresa
+        - task_key: sf_dim_grupo_cnae
+        - task_key: sf_dim_mudanca_estado
+        - task_key: sf_dim_tempo
+        - task_key: sf_fato_mudanca_estado
+      - task_key: gold_dq_gold
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/dq/dq_gold.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: gold_fato_empresa_mes
+        - task_key: gold_obt_dashboard_eventos
+        - task_key: sf_fato_mudanca_estado
