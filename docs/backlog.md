@@ -37,6 +37,18 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 - Notebooks `backfill_motivos.ipynb` e `New Notebook ...` importam módulos inexistentes.
 - CI: sem `ruff`; deploy Databricks é `echo`. Não há runner/Job definition (DABs) para os SQL.
 
+## Ideias e pendências novas (2026-11-08)
+
+- **CI útil** (o atual quebra): ruff + pytest só de testes locais sem rede (landing) + validação de sintaxe dos
+  SQL (ex.: `sqlglot` dialeto Spark, trocando `{{param}}` por literais). Remover o deploy `echo`.
+- **Etapa exploratória local**: baixar recorte pequeno (ex.: Niterói, 2023-05..08) e explorar com DuckDB para
+  achar padrões/problemas e revisar glossário/eventos antes da revisão profunda. Custo zero de cluster.
+- **Dicionário de dados** (`docs/dicionario_dados.md`): schema + transformação por coluna, pedido da orientadora.
+- **Identidade de sócio PF**: medir colisões/mudanças (faixa etária, nome). Pré-requisito de grafo/grupos.
+- **Pseudonimização de nome palavra a palavra** (HMAC com chave secreta) — avaliar quando houver grafo.
+- **Grande setor** (D-10): achar fonte oficial ou trocar por seção CNAE.
+- **Backlog como pasta** (`docs/backlog/README.md` + um arquivo por item) quando crescer.
+
 ## Roadmap (do contexto histórico, ainda válido)
 
 1. ~~Concluir backfill landing 2023-05..2023-08~~ — feito pelo usuário (todas as tabelas no S3, 2026-11). Não existe 2023-04 (1º mês da RFB = 2023-05) → ver B9.

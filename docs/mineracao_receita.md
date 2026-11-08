@@ -49,3 +49,7 @@ features de grafo (G1/G2/G3) com importância baixa; G3 considerado insatisfató
    safra vaza (`g2_qtd_filiais_falidas`); usar split temporal e calibrar limiar; poda de super-nós de contato.
 4. **Divergências a decidir quando chegar lá:** chave do sócio PF (CPF mascarado colide); limite de grau 10×20;
    escopo Niterói × Brasil; LGPD (lá o nome do sócio PF fica no nó — aqui a regra é não expor).
+   Ideia do autor: pseudonimizar o nome **palavra a palavra** (sobrenome compartilhado pode indicar parentesco).
+   Atenção: hash simples de nome é revertível por dicionário (nomes têm pouca entropia) → usar HMAC com chave
+   secreta fora do repo; continua sendo dado pessoal pseudonimizado (LGPD), não anonimizado. Sobrenomes comuns
+   (Silva, Santos…) geram falso parentesco → ponderar por frequência.

@@ -12,12 +12,15 @@
 | **Encerramento** | Situação BAIXADA / INAPTA / NULA (SUSPENSA **não** encerra). | `fato_empresa_mes`, `ds_coorte_sobrevivencia` |
 | **Falência** | Categoria `FECHAMENTO POR FALENCIA` (e `EXTINCAO POR LIQUIDACAO` como evento de fim) derivada por regex do motivo. | `obt_dashboard_eventos` |
 | **Coorte** | Mês/ano de nascimento da empresa; sobrevivência com censura à direita (Kaplan-Meier / Cox). | `d_coorte_sobrevivencia.sql` → view `ds_coorte_sobrevivencia` |
-| **Grande setor econômico** | Seção CNAE: A=AGROPECUARIA, B–E=INDUSTRIA, F=CONSTRUCAO, G=COMERCIO, H–U=SERVICOS, outros=OUTROS. Agrupamento **analítico**, não oficial IBGE. | `dim_cnae` |
+| **Grande setor econômico** | Seção CNAE: A=AGROPECUARIA, B–E=INDUSTRIA, F=CONSTRUCAO, G=COMERCIO, H–U=SERVICOS, outros=OUTROS. Agrupamento **analítico** (CASE no código), não vem do IBGE — em revisão (D-10). | `dim_cnae` |
 | **Grupo CNAE** | Combinação (CNAE principal, lista ordenada de secundários) da matriz. | `dim_grupo_cnae`, `ponte_cnae` |
 | **Sentinelas** | `-1` = não aplicável / ghost row; `-2` = CNAE informado mas inexistente no domínio IBGE. | silver_final |
 | **pk** | Chave técnica JSON das colunas PK (socios: `cnpj_basico-cnpj_cpf_socio[-nome]`). Não é identidade global. | bronze |
+| **Identidade de sócio PF** | Não existe chave confiável: CPF mascarado (6 dígitos) + nome colide e muda — troca de faixa etária pode separar duas pessoas tidas como uma; nome muda (casamento, gênero, vontade). Limitação **a medir** antes de grafo/grupos. | — |
 | **change_hash** | SHA-256 do JSON dos atributos de negócio (bronze). | bronze → SCD2 |
 | **vinculo_ativo** | Sócio presente no snapshot do mês. Ausência num snapshot completo ⇒ versão `FALSE` (saída do QSA). | `si/socios.sql` |
+
+> Definições podem mudar após a exploração dos dados (etapa exploratória local).
 
 ## Eventos de negócio (`silver_intermediate.log_eventos_negocio`)
 

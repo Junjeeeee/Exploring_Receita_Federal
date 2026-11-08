@@ -31,16 +31,32 @@
   revisão/correção de bugs, refatoração, documentação (`docs/`) e apoio ao modelo dimensional; o texto da
   monografia é de autoria própria.
 
-## Cronograma sugerido (a validar na reunião de segunda)
+## Cronograma (do autor, 2026-11-08 — iterativo, ambicioso)
 
 | Até | Marco |
 |---|---|
-| 2026-11-16 | Specs de revisão do código (bronze/silver/gold) e do Job Databricks aprovadas |
-| 2026-11-30 | Correções aplicadas; 1ª execução bronze→silver→gold (2023-05..08) num job cluster spot; DQ verde |
-| 2026-12-14 | Dashboard v1 sobre os 4 meses; backfill da janela completa iniciado |
-| 2026-12-31 | Janela completa processada; dashboard final; análises (sobrevivência/painel) |
-| 2027-01-15 | Cap. 3 e Resultados escritos pelo autor; revisão de todo o código gerado com IA |
-| fim jan/2027 | Texto final (+ grafo/ML só se sobrar tempo, senão "trabalhos futuros") |
+| 2026-11-08 (hoje) | Correções mínimas, 1ª execução no Databricks (4 meses) e dashboard inicial para a reunião de 09/11. Sem crescer escopo. |
+| 2026-11-16 | Specs de revisão (bronze/silver/gold) e do Job aprovadas; diagramas e modelos lógicos (feitos pelo autor); TCC reescrito com atualizações |
+| 2026-11-23 | Tudo consistente; dashboard quase final (sem execução completa) |
+| 2026-11-30 | Primeira run completa; TCC **entregável** |
+| 2026-12-02 | Análises completas; nova revisão de literatura focada em dashboard + análises |
+| 2026-12-07 | Início do trabalho com grafos |
+| 2026-12-14 | Grafos prontos e visuais; enriquecimento do dashboard |
+| 2026-12-21 | TCC com apêndice de visualização de grafos |
+| 2026-12-28 | Análises enriquecidas com dados de grafo |
+| 2027-01-04 | TCC pronto — daqui em diante é excedente |
+| 2027-01-11 | ML inicial (CatBoost); novas hipóteses a partir dos resultados |
+| 2027-01-18 | Resultados documentados, hipóteses testadas |
+| 2027-01-25 | TCC enviado para revisão da orientadora |
+| após revisão | Correções apontadas pela orientadora |
+| março/2027 | Apresentação. Entre revisão e apresentação: avaliar publicação, LinkedIn, empreendimento |
+
+## Orientações da orientadora
+- **Metodologia atemporal:** não citar tecnologias (Spark, Delta, Databricks…) na metodologia, salvo se
+  indispensável; elas vão numa seção/capítulo de **Implementação**.
+- **Dicionário de dados:** tabela com o schema de cada tabela e a transformação aplicada em cada coluna.
+  → Sugestão: o repo pode manter `docs/dicionario_dados.md` gerado/atualizado a partir do código, como fonte
+  para o autor montar a tabela no texto.
 
 ## Build
 `pdflatex main && bibtex main && makeglossaries main && pdflatex main && pdflatex main` (inferido; não há `.latexmkrc`).
@@ -114,7 +130,7 @@ Faltam: Kimball/SCD2, CDC, Kaplan-Meier/Cox, predição de falência (Altman etc
    condicionados ("se concluído") ou em trabalhos futuros. Título provisório cita grafo e ML — avaliar.
 2. Metadados, resumo/abstract, abreviaturas, glossário reais.
 3. Cap. 1: problema, pergunta de pesquisa, objetivos geral/específicos, justificativa, contribuições, estrutura.
-4. Cap. 3: reescrever no passado/impessoal, alinhar com `docs/` (stack, 12 tabelas, metadados, dimensional, eventos, D-04..D-09, LGPD, DQ); diagramas; absorver "Não sei aonde por".
+4. Cap. 3: separar **Metodologia** (conceitual, sem tecnologias) de **Implementação** (stack); reescrever no passado/impessoal, alinhar com `docs/` (stack, 12 tabelas, metadados, dimensional, eventos, D-04..D-09, LGPD, DQ); diagramas; absorver "Não sei aonde por".
 5. Criar capítulo de **Resultados** (substitui cap. 4): volumes por camada, DQ, cobertura temporal, prints do dashboard, sobrevivência. **Depende** de concluir backfill e rodar silver/gold (ver `backlog.md`).
 6. Cap. 5: conclusão, limitações, trabalhos futuros.
 7. Cap. 2: completar grafos + `angles2018`, Sinarc; adicionar SCD2/dimensional, CDC, sobrevivência; corrigir legenda duplicada da Fig. 2.

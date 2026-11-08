@@ -47,16 +47,20 @@ Detalhes e DAG: [docs/architecture.md](docs/architecture.md).
 - **LGPD**: nunca CPF em claro; não desmascarar documentos; `informacao_adicional` sem documentos pessoais.
 - **Regex de mascaramento MEI** (`limpar_chunk_empresas_mei` em `src/landing/landing_lib.py`) foi validada
   em dados reais — não alterar sem evidência concreta de falha.
-- **Não redesenhar DQ existente**; corrigir apenas problemas demonstrados. Preferir correções mínimas e pontuais.
+- **DQ (data quality = testes/asserções de qualidade)** pode ser melhorado ou redesenhado quando fizer sentido.
 - **Bronze não tem regra de negócio.** Regras vivem em silver/gold.
 - **Chave técnica ≠ chave de negócio**: nunca extrair CNPJ de `pk` via regex; juntar por `cnpj_basico`.
 - **NULL ≠ FALSE** em dados tributários (ausência de info não é "não optante").
-- **Reprocessamento** de janela preserva versões passadas e futuras — nada de delete em massa.
+- **Reprocessamento**: em produção, preserva versões passadas e futuras. Em desenvolvimento, destruir e
+  reconstruir é aceitável (decidir caso a caso; ver D-08).
 - Socios precisa do **snapshot completo do mês anterior** à janela (senão gera saídas falsas do QSA).
   Exceção: **2023-05 é o primeiro mês publicado** — é carga inicial (baseline), sem eventos; ver backlog B9.
 - **Nunca editar o repositório do TCC** (`/home/Junj/Documents/TCC`) nem redigir o texto da monografia
   (regra de autoria da UFRJ). Sugestões de mudança vão para `docs/tcc.md` (documento vivo).
 - Código gerado com IA precisa ser legível e explicável: o autor revisa tudo antes da entrega final.
+- **Custo de cluster**: consultas exploratórias em lote (um notebook/arquivo com várias queries, uma subida de
+  cluster), ou localmente (DuckDB sobre amostra). Nada de cluster ligado para query avulsa.
+- Arquitetura, eventos e definições do glossário **podem mudar** — a hora de questionar é agora.
 
 ## Git
 
