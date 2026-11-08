@@ -29,6 +29,7 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 - CTE `ponte_primaria` e normalização de CNAE duplicadas em vários SQL.
 - `fato_empresa_mes` acoplado às strings de `categoria_macro_evento` da OBT.
 - `vw_dashboard_eventos_cnae` sem consumidor — avaliar remoção.
+- Dashboard v0 (`src/gold/dashboard/`, spec `features/dashboard-v0.md`): importar e validar formato; `ds_micro_*` ficaram sem uso (avaliar remoção junto com `vw_dashboard_eventos_cnae`).
 - Bronze descarta linhas com PK nula sem contar/registrar.
 - `CONTRATOS_SCHEMA` (5 tabelas) duplica `colunas_esperadas` das configs.
 - Landing: tabelas estáticas nunca atualizam sem `--force`; DQ só schema+contagem; `min_linhas` hardcoded; `print` em vez de logging.
