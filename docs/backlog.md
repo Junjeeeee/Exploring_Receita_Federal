@@ -13,6 +13,7 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 | B5 🔎 | silver_final | `fato_mudanca_estado`: join anterior usa `fim_vigencia >= mes` e posterior `<` (inconsistente); pode duplicar eventos; fallback para primeira versão pode atribuir estado errado. | `ingest/fato_mudanca_estado.sql` |
 | B6 ✅ | tests | `tests/test_extractor.py` importa `cnpj_pipeline.extract.extractor` (removido) → pytest/CI falham na coleta. `test_cdc_logic.py`/`test_dimensions.py` vazios. | `src/cnpj_pipeline/` só `__pycache__` |
 | B7 🔎 | silver_int | `log_eventos_negocio.sql` exige parâmetros literais (sem fallback); `dq_log_eventos_negocio` com default diferente das SCD2. | readme |
+| B9 ✅ | silver_int | **Primeiro mês disponível é 2023-05** (não existe 2023-04 na RFB). `socios.sql` exige o mês anterior a `mes_ini` (ASSERT `snapshots_validos`) → 1ª execução com 2023-05 falha. Falta um modo **carga inicial (baseline)**: 2023-05 abre as versões SCD2 sem gerar eventos de entrada/saída/criação (senão o log teria todo o estoque como "evento" em 2023-05). Eventos reais começam em 2023-06. Verificar o mesmo nas outras SCD2 e em `log_eventos_negocio`. | `socios.sql:63-68` |
 | B8 🔎 | bronze | Volumetria: erros de leitura do histórico engolidos; média inclui meses futuros; `forcar_aprovacao` não ligado. | `data_quality.py:375` |
 
 ## Dívidas / limpeza
@@ -38,9 +39,11 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 
 ## Roadmap (do contexto histórico, ainda válido)
 
-1. ~~Concluir backfill landing 2023-05..2023-08~~ — feito pelo usuário (todas as tabelas no S3, 2026-11). Conferir se **socios 2023-04** também está no S3.
+1. ~~Concluir backfill landing 2023-05..2023-08~~ — feito pelo usuário (todas as tabelas no S3, 2026-11). Não existe 2023-04 (1º mês da RFB = 2023-05) → ver B9.
 1b. **Revisão/refatoração/caça a bugs** de bronze, silver e gold antes de rodar (via specs em `docs/specs/features/`).
 1c. **Job Databricks** em workspace clássico com job cluster barato (spot, autoterminação) — serverless saiu caro.
+    Por ora o usuário cria o Job **manualmente**; entregar código + definição (JSON/YAML do Job) para copiar. CLI só depois de definir limites de custo.
+    Janela completa: 2023-05 até o mês mais recente disponível. Dashboard: primeiro no Databricks (AI/BI); publicação externa a avaliar.
 2. Reingerir bronze → 4 SCD2 → `log_eventos_negocio` → silver final (dims → ponte → fato) → validações.
 3. Primeira execução real em cluster das camadas silver (nunca executadas).
 4. Gold / dashboard v2: corrigir B3, revisar datasets.

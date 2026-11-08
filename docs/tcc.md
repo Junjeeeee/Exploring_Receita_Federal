@@ -14,7 +14,10 @@
   texto, enriquecem esta entrega) → entrega garantida; (2) só então grafo (protótipo em
   `/home/Junj/Documents/Repos/mineracao_receita`) e ML/testes de hipótese. Hipóteses dos slides são exemplos,
   não finais.
-- **Execução:** teste com 2023-05..2023-08 (landing já no S3); validado, rodar a janela completa.
+- **Execução:** teste com 2023-05..2023-08 (landing já no S3); validado, rodar a janela completa
+  (2023-05 até o mês mais recente). 2023-05 é o primeiro snapshot publicado → serve só de baseline; eventos de
+  negócio observáveis a partir de 2023-06 (**limitação a citar no texto**). ML/hipóteses talvez usem ~2 anos (futuro).
+- **Dashboard:** primeiro no Databricks; publicação externa depende de utilidade e custo.
 - **Atualização diária** não faz sentido (fonte é mensal) → texto deve falar em carga mensal; um bot que detecte
   nova publicação da RFB fica como trabalho futuro.
 - **Ética/LGPD:** dados públicos; CPF já tratado na landing. Dashboard não expõe nomes de sócios nem endereço de

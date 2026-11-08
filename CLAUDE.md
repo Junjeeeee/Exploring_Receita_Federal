@@ -53,6 +53,7 @@ Detalhes e DAG: [docs/architecture.md](docs/architecture.md).
 - **NULL ≠ FALSE** em dados tributários (ausência de info não é "não optante").
 - **Reprocessamento** de janela preserva versões passadas e futuras — nada de delete em massa.
 - Socios precisa do **snapshot completo do mês anterior** à janela (senão gera saídas falsas do QSA).
+  Exceção: **2023-05 é o primeiro mês publicado** — é carga inicial (baseline), sem eventos; ver backlog B9.
 - **Nunca editar o repositório do TCC** (`/home/Junj/Documents/TCC`) nem redigir o texto da monografia
   (regra de autoria da UFRJ). Sugestões de mudança vão para `docs/tcc.md` (documento vivo).
 - Código gerado com IA precisa ser legível e explicável: o autor revisa tudo antes da entrega final.
