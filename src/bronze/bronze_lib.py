@@ -259,7 +259,8 @@ def ingerir_tabela_bronze(
 
 def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_ini: Optional[str] = None, mes_fim: Optional[str] = None):
     nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
-    meses = gerar_range_meses(mes_ini, mes_fim)
+    # Tabelas estáticas não têm a coluna mes_referencia: validam a tabela inteira uma vez.
+    meses = gerar_range_meses(mes_ini, mes_fim) if config.is_snapshot_mensal else [None]
     print(f"🧪 Executando Data Quality: {nome_completo_tabela} | Meses: {meses}")
 
     df_tabela = spark.read.table(nome_completo_tabela)
@@ -267,7 +268,11 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
     colunas_raw = [c for c in df_tabela.columns if c not in colunas_tecnicas]
 
     for mes_referencia in meses:
-        df_mes = df_tabela.filter(F.col("mes_referencia") == mes_referencia)
+        if mes_referencia is None:
+            df_mes = df_tabela
+            mes_referencia = "estatica"
+        else:
+            df_mes = df_tabela.filter(F.col("mes_referencia") == mes_referencia)
 
         # 1. Validação de Schema local da config (garante suporte a novas tabelas) e do módulo data_quality
         if config.colunas_esperadas:
