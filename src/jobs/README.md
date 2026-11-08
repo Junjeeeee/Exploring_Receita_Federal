@@ -5,8 +5,8 @@ Pipeline completo (bronze → silver_intermediate → silver_final → gold) num
 
 ## Como criar (manual, pela UI)
 
-1. *Workflows → Create job → ⋮ → Edit as JSON* (ou *View JSON/YAML* e colar).
-2. Colar `tcc_receita_pipeline.job.json` e ajustar os campos marcados abaixo.
+1. *Workflows → Create job → ⋮ → Edit as YAML* e colar `tcc_receita_pipeline.job.yml`.
+2. Ajustar os campos marcados abaixo.
 3. Rodar com os parâmetros padrão (`2023-05` a `2023-08`).
 
 | Campo | O que ajustar |

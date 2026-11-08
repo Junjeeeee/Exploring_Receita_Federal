@@ -58,4 +58,4 @@ commit próprio e item no backlog. Mudanças de arquitetura ou de regra de negó
 para o TCC e para a declaração de uso de IA).
 **Motivo:** velocidade sem perder rastreabilidade.
 **Consequências:** escrever spec retroativa ao sair do protótipo — pendentes: `job-databricks` (runners +
-Job JSON) e `carga-inicial` (B9).
+Job YAML) e `carga-inicial` (B9).
