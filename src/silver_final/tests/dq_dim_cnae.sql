@@ -2,8 +2,9 @@ WITH metricas AS (
     SELECT 
         COUNT(*) AS total_linhas,
         SUM(CASE WHEN sk_cnae = -1 THEN 1 ELSE 0 END) AS qtd_ghost_row,
-        SUM(CASE WHEN sk_cnae IS NULL OR nk_cnae IS NULL OR codigo_cnae IS NULL THEN 1 ELSE 0 END) AS chaves_nulas,
-        SUM(CASE WHEN sk_cnae != -1 AND NOT REGEXP_LIKE(codigo_cnae, '^[0-9]{7}$') THEN 1 ELSE 0 END) AS formato_invalido,
+        -- Sentinelas (-1, -2) não têm codigo_cnae por definição; só linhas reais exigem o código.
+        SUM(CASE WHEN sk_cnae IS NULL OR nk_cnae IS NULL OR (sk_cnae >= 0 AND codigo_cnae IS NULL) THEN 1 ELSE 0 END) AS chaves_nulas,
+        SUM(CASE WHEN sk_cnae >= 0 AND NOT REGEXP_LIKE(codigo_cnae, '^[0-9]{7}$') THEN 1 ELSE 0 END) AS formato_invalido,
         SUM(CASE WHEN descricao_cnae IS NULL OR nome_secao IS NULL OR grande_setor_economico IS NULL THEN 1 ELSE 0 END) AS atributos_nulos
     FROM tcc_receita.silver_final.dim_cnae
 ),
