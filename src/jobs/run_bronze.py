@@ -1,10 +1,11 @@
-"""Ingestão + DQ da Bronze para várias tabelas numa única task do Job.
+"""Ingestão e/ou DQ da Bronze (task `spark_python_task`, repo como `git_source`).
 
-Uso (task `spark_python_task`, repo como `git_source`):
-    src/jobs/run_bronze.py --tabelas empresas,estabelecimentos \
-        --mes_referencia_inicial 2023-05 --mes_referencia_final 2023-08 [--sem_dq]
+Uso no Job (uma task de ingestão e uma de DQ por tabela):
+    src/jobs/run_bronze.py --modo ingestao --tabelas empresas \
+        --mes_referencia_inicial 2023-05 --mes_referencia_final 2023-08
+    src/jobs/run_bronze.py --modo dq --tabelas empresas --mes_referencia_inicial ... 
 
-Para cada tabela: ingere (landing S3 → tcc_receita.bronze.<t>) e roda o DQ em seguida.
+Uso local/manual: --modo ambos com várias tabelas (lista, MENSAIS, ESTATICAS ou ALL).
 Tabelas estáticas ignoram a janela de meses. Requer AWS_BUCKET_NAME no ambiente do cluster.
 """
 
@@ -31,7 +32,7 @@ def main(argv=None) -> None:
                         help="Lista separada por vírgula, MENSAIS, ESTATICAS ou ALL.")
     parser.add_argument("--mes_referencia_inicial", default="")
     parser.add_argument("--mes_referencia_final", default="")
-    parser.add_argument("--sem_dq", action="store_true", help="Pula o DQ (não recomendado).")
+    parser.add_argument("--modo", choices=["ingestao", "dq", "ambos"], default="ambos")
     args, _ = parser.parse_known_args(argv)
 
     atalhos = {"MENSAIS": MENSAIS, "ESTATICAS": ESTATICAS, "ALL": ESTATICAS + MENSAIS}
@@ -47,10 +48,11 @@ def main(argv=None) -> None:
 
     for tabela in tabelas:
         config = importlib.import_module(f"src.bronze.configs.{tabela}").CONFIG
-        ingerir_tabela_bronze(spark, config, mes_ini, mes_fim)
-        if not args.sem_dq:
+        if args.modo in ("ingestao", "ambos"):
+            ingerir_tabela_bronze(spark, config, mes_ini, mes_fim)
+        if args.modo in ("dq", "ambos"):
             testar_tabela_bronze(spark, config, mes_ini, mes_fim)
-    print(f"\n✅ Bronze concluída: {tabelas}")
+    print(f"\n✅ Bronze ({args.modo}) concluída: {tabelas}")
 
 
 if __name__ == "__main__":
