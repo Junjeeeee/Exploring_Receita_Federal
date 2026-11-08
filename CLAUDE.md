@@ -41,6 +41,9 @@ Detalhes e DAG: [docs/architecture.md](docs/architecture.md).
 3. Ao terminar: atualizar a spec da camada afetada (`docs/specs/<camada>.md`), `docs/backlog.md`
    e, se houve decisão de design, `docs/decisions.md`.
 4. Distinguir sempre **implementado / preparado (não executado) / planejado**.
+5. **Exceção — prototipação/testes** (ex.: preparar e depurar uma execução): correções que só destravam a
+   execução podem ir direto ao código, desde que cada uma fique registrada no `backlog.md` e em commit próprio.
+   Ao sair do protótipo, escrever a spec **retroativa** do que ficou (ver D-12).
 
 ## Regras que não podem ser quebradas
 

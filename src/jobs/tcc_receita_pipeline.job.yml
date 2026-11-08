@@ -1,0 +1,137 @@
+# Job Databricks do TCC (formato YAML da UI: Workflows → Job → ⋮ → Edit as YAML).
+# Mesmo formato de recurso do Databricks Asset Bundles (resources.jobs.<chave>).
+# Campos a ajustar no workspace: ver src/jobs/README.md.
+resources:
+  jobs:
+    tcc_receita_pipeline:
+      name: tcc_receita_pipeline
+      max_concurrent_runs: 1
+      timeout_seconds: 14400
+      parameters:
+      - name: mes_referencia_inicial
+        default: "2023-05"
+      - name: mes_referencia_final
+        default: "2023-08"
+      git_source:
+        git_url: https://github.com/Junjeeeee/Exploring_Receita_Federal
+        git_provider: gitHub
+        git_branch: ceps_ibge_and_dashboard_v2
+      job_clusters:
+      - job_cluster_key: cluster_pipeline
+        new_cluster:
+          spark_version: "15.4.x-scala2.12"
+          node_type_id: r5d.xlarge
+          driver_node_type_id: m5d.xlarge
+          autoscale:
+            min_workers: 1
+            max_workers: 4
+          aws_attributes:
+            availability: SPOT_WITH_FALLBACK
+            first_on_demand: 1
+            spot_bid_price_percent: 100
+            zone_id: "auto"
+            instance_profile_arn: <PREENCHER_SE_USAR_INSTANCE_PROFILE_OU_REMOVER>
+          data_security_mode: SINGLE_USER
+          spark_conf:
+            spark.sql.shuffle.partitions: "auto"
+            spark.databricks.delta.optimizeWrite.enabled: "true"
+          spark_env_vars:
+            AWS_BUCKET_NAME: lakehouse-receita
+          custom_tags:
+            projeto: tcc_receita
+      tasks:
+      - task_key: bronze_estaticas
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --tabelas
+          - ESTATICAS
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: bronze_mensais
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_bronze.py
+          source: GIT
+          parameters:
+          - --tabelas
+          - MENSAIS
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+      - task_key: silver_int_scd2
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/ingest/empresas.sql,src/silver_intermediate/ingest/estabelecimentos.sql,src/silver_intermediate/ingest/dados_simples.sql,src/silver_intermediate/ingest/socios.sql,src/silver_intermediate/tests/dq_empresas.sql,src/silver_intermediate/tests/dq_estabelecimentos.sql,src/silver_intermediate/tests/dq_dados_simples.sql,src/silver_intermediate/tests/dq_socios.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: bronze_estaticas
+        - task_key: bronze_mensais
+      - task_key: silver_int_eventos
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_intermediate/ingest/log_eventos_negocio.sql,src/silver_intermediate/tests/dq_log_eventos_negocio.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: silver_int_scd2
+      - task_key: silver_final_dims
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/dim_cnae.sql,src/silver_final/ingest/dim_grupo_cnae.sql,src/silver_final/ingest/ponte_cnae.sql,src/silver_final/ingest/dim_tempo.sql,src/silver_final/ingest/dim_mudanca_estado.sql,src/silver_final/ingest/dim_empresa.sql,src/silver_final/tests/dq_dim_cnae.sql,src/silver_final/tests/dq_dim_grupo_cnae.sql,src/silver_final/tests/dq_ponte_cnae.sql,src/silver_final/tests/dq_dim_mucanca_estado.sql,src/silver_final/tests/dq_dim_empresa.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: silver_int_eventos
+      - task_key: silver_final_fato
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/silver_final/ingest/fato_mudanca_estado.sql,src/silver_final/tests/dq_fato_mudanca_estado.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: silver_final_dims
+      - task_key: gold
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/fato_indicadores_macro_mes.sql,src/gold/obt_dashboard_eventos.sql,src/gold/dashboard_mercado_ativo.sql,src/gold/d_coorte_sobrevivencia.sql,src/gold/fato_empresa_mes.sql,src/gold/ds_visao_macro.sql,src/gold/fato_indicadores_setoriais_mes.sql,src/gold/dq/dq_gold.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: silver_final_fato
