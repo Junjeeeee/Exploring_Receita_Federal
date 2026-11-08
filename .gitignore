@@ -20,4 +20,4 @@ venv/
 .idea/
 
 # Arquivos de configuração de ambiente
-.env
+.envtmp_receita/
