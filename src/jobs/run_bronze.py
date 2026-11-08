@@ -14,7 +14,19 @@ import importlib
 import sys
 from pathlib import Path
 
-RAIZ_REPO = Path(__file__).resolve().parents[2]
+def _caminho_script() -> Path:
+    """Caminho deste script. O Databricks executa spark_python_task via exec() sem `__file__`;
+    nesse caso o caminho vem de sys.argv[0] (ou da variável `filename` do wrapper)."""
+    try:
+        return Path(__file__).resolve()
+    except NameError:
+        candidato = globals().get("filename") or (sys.argv[0] if sys.argv and sys.argv[0] else "")
+        if not candidato:
+            raise RuntimeError("Não foi possível descobrir o caminho do script para achar a raiz do repo.")
+        return Path(candidato).resolve()
+
+
+RAIZ_REPO = _caminho_script().parents[2]
 if str(RAIZ_REPO) not in sys.path:
     # Scripts de git_source rodam com o diretório do script no path, não a raiz do repo.
     sys.path.insert(0, str(RAIZ_REPO))
@@ -56,4 +68,4 @@ def main(argv=None) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()  # sem sys.exit: no kernel do Databricks SystemExit pode virar falha
