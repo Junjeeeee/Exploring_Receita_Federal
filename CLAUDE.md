@@ -31,6 +31,7 @@ Detalhes e DAG: [docs/architecture.md](docs/architecture.md).
 | Começar uma feature nova | copie `docs/specs/_template.md` → `docs/specs/features/<nome>.md` |
 | Texto do TCC (LaTeX em `/home/Junj/Documents/TCC`), status e divergências texto×código | `docs/tcc.md` |
 | Prazos, escopo e prioridades do TCC | `docs/tcc.md` § Escopo e prazos |
+| Repo anterior (grafo + ML, Niterói) e o que reaproveitar | `docs/mineracao_receita.md` |
 
 ## Fluxo de trabalho (Spec Driven Development)
 
