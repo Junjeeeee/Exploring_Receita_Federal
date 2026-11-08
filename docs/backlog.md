@@ -19,6 +19,7 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 | ~~B12~~ ✔ corrigido 2026-11-08 | silver | `to_date(x,'yyyyMMdd')` quebra com ANSI ligado ('00000000') → `try_to_date`. | — |
 | B13 🔎 | silver_int | Eventos por data (`EMPRESA NASCEU`, `SOCIO ENTROU NO QSA`) só entram se a data cair **dentro da janela** processada. Com publicação atrasada (empresa de 2023-08 aparece só no snapshot 2023-09), rodar mês a mês perde o evento. Run único da janela completa não sofre. | `log_eventos_negocio.sql` |
 | ~~B14~~ ✔ corrigido 2026-11-08 | bronze | `CREATE CATALOG IF NOT EXISTS` sem *managed location* falha no metastore sem storage root. Catálogo virou pré-requisito manual (README do Job). | `bronze_lib.py` |
+| ~~B15~~ ✔ corrigido 2026-11-08 | landing | Estáticas `cnaes_ibge`, `paises`, `municipios`, `naturezas_juridicas`, `qualificacoes_socios` só existiam no layout antigo (`<pasta>/mes_referencia=*/`); a bronze lê `<pasta>/dados.parquet`. Reextraídas com a landing atual (snapshot 2023-08). Sobram pastas antigas órfãs (`cnaes/`, `motivos/`, `naturezas/`, `qualificacoes/` e as partições mensais das estáticas): apagar depois de confirmar que nada as lê. | S3 |
 | B8 🔎 (parcial: média só de meses anteriores) | bronze | Volumetria: erros de leitura do histórico engolidos; média inclui meses futuros; `forcar_aprovacao` não ligado. | `data_quality.py:375` |
 
 ## Dívidas / limpeza
