@@ -30,7 +30,6 @@ resources:
             first_on_demand: 1
             spot_bid_price_percent: 100
             zone_id: "auto"
-            instance_profile_arn: <PREENCHER_SE_USAR_INSTANCE_PROFILE_OU_REMOVER>
           data_security_mode: SINGLE_USER
           spark_conf:
             spark.sql.shuffle.partitions: "auto"
