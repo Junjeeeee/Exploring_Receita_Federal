@@ -12,7 +12,7 @@ Pipeline completo (bronze → silver_intermediate → silver_final → gold) num
 | Campo | O que ajustar |
 |---|---|
 | `git_source` | Repo privado → configurar credencial Git em *User settings → Linked accounts*. Branch atual: `ceps_ibge_and_dashboard_v2`. |
-| `aws_attributes.instance_profile_arn` | Se o S3 é acessado por *instance profile*, preencher; se for **external location / storage credential** do Unity Catalog, **remover a linha**. |
+| `aws_attributes.instance_profile_arn` | Ausente por padrão (acesso ao S3 via **external location** do Unity Catalog). Se usar *instance profile*, adicionar `instance_profile_arn: arn:aws:iam::<conta>:instance-profile/<nome>` em `aws_attributes`. |
 | `spark_env_vars.AWS_BUCKET_NAME` | Nome do bucket da landing. |
 | `node_type_id` / `autoscale` | Ponto de partida: workers `r5d.xlarge` (memória p/ SCD2 de estabelecimentos) spot, 1–4. Driver on-demand (`first_on_demand: 1`) para o spot não derrubar o run. |
 | `spark_version` | 15.4 LTS (Spark 3.5). Em 17.x (Spark 4) o ANSI vem ligado — o código já usa `try_to_date`, mas é a versão menos testada. |
