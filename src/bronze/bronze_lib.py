@@ -71,7 +71,8 @@ def obter_bucket_landing() -> str:
 
 
 def configurar_ambiente_unity_catalog(spark: SparkSession):
-    spark.sql("CREATE CATALOG IF NOT EXISTS tcc_receita")
+    # O catálogo é pré-requisito (criado uma vez, com managed location no S3): o local de armazenamento
+    # depende da conta e o Job não deve ter permissão de CREATE CATALOG. Ver src/jobs/README.md.
     spark.sql("CREATE SCHEMA IF NOT EXISTS tcc_receita.bronze")
 
 

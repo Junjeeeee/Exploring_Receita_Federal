@@ -42,8 +42,11 @@ Fora do Job: `ds_micro_*.sql` são consultas do dashboard (parâmetros `:param_*
 (legado) e `vw_dashboard_eventos_cnae.sql` (sem consumidor) não rodam.
 
 ## Pré-requisitos no workspace
-- Unity Catalog com permissão para `CREATE CATALOG tcc_receita` (ou criar antes, com *managed location*,
-  e os schemas `bronze`, `silver_intermediate`, `silver_final`, `gold`).
+- Catálogo `tcc_receita` criado **uma vez, antes do Job**, com *managed location* no S3 (os schemas o Job cria):
+  *Catalog → + → Create catalog* → tipo *Standard* → desmarcar *Use default storage* → escolher a external
+  location e um caminho, ex. `s3://<bucket>/unity/tcc_receita/`. Equivalente em SQL:
+  `CREATE CATALOG tcc_receita MANAGED LOCATION 's3://<bucket>/unity/tcc_receita/'`.
+  **Não usar Default Storage**: ele só é acessível por compute serverless, e o Job roda em cluster clássico.
 - Leitura de `s3://<bucket>/landing/receita_federal/` pelo cluster.
 - `bronze.cnaes` (CNAE da Receita) **não** é ingerido: não existe na landing; usa-se `cnaes_ibge`.
 - 2023-05 é o primeiro mês publicado: a janela começando nele é **carga inicial** (sem eventos no mês).
