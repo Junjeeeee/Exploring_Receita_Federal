@@ -52,6 +52,13 @@ Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não e
 - **Etapa exploratória local**: baixar recorte pequeno (ex.: Niterói, 2023-05..08) e explorar com DuckDB para
   achar padrões/problemas e revisar glossário/eventos antes da revisão profunda. Custo zero de cluster.
 - **Dicionário de dados** (`docs/dicionario_dados.md`): schema + transformação por coluna, pedido da orientadora.
+- **🔎 Investigar PKs repetidas da Receita (B16) — prioridade após o 1º run.** Hoje a silver desempata de forma
+  arbitrária (`change_hash DESC`), o que pode esconder informação. Investigar, por tabela e por mês:
+  1. volume (`GROUP BY pk HAVING COUNT(*) > 1` na bronze) e se as mesmas PKs se repetem em todos os meses;
+  2. quais colunas divergem entre as versões (empresas: capital/porte? socios: qualificação/data de entrada?);
+  3. se é erro de publicação da Receita ou dado legítimo (ex.: sócio com dois papéis no mesmo CNPJ);
+  4. decidir a regra na silver (ex.: incluir qualificação na chave de socios, agregar papéis, ou manter o desempate)
+     e registrar em `decisions.md`; avaliar uma DQ informativa com a contagem por mês.
 - **Identidade de sócio PF**: medir colisões/mudanças (faixa etária, nome). Pré-requisito de grafo/grupos.
 - **Pseudonimização de nome palavra a palavra** (HMAC com chave secreta) — avaliar quando houver grafo.
 - **Grande setor** (D-10): achar fonte oficial ou trocar por seção CNAE.
