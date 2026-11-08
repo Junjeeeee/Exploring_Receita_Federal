@@ -42,9 +42,10 @@ USING DELTA
 PARTITIONED BY (mes_referencia)
 COMMENT 'Camada Gold: OBT de Eventos de Transição Empresarial (grão: 1 linha por evento/empresa no mês, com estados anterior e posterior).';
 
-INSERT OVERWRITE tcc_receita.gold.obt_dashboard_eventos
-REPLACE WHERE mes_referencia >= COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM'))
-          AND mes_referencia <= COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM'))
+-- REPLACE WHERE só aceita INSERT INTO e predicado com literais: o Job sempre passa YYYY-MM.
+INSERT INTO tcc_receita.gold.obt_dashboard_eventos
+REPLACE WHERE mes_referencia >= '{{mes_referencia_inicial}}'
+          AND mes_referencia <= '{{mes_referencia_final}}'
 WITH params AS (
     SELECT 
         COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM')) AS mes_ini,
