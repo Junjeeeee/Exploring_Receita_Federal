@@ -7,6 +7,7 @@ para o S3 para consumo posterior pela camada Bronze.
 import argparse
 import os
 import re
+import shutil
 import tempfile
 import urllib.parse
 import zipfile
@@ -234,14 +235,24 @@ def _membros_dados_rfb(zip_ref: zipfile.ZipFile):
     return membros
 
 
+def _log_retry_download(retry_state) -> None:
+    """Expõe a causa de cada tentativa sem revelar a URL/token de compartilhamento."""
+    erro = retry_state.outcome.exception() if retry_state.outcome else None
+    print(
+        f"  ⚠️ Falha ao baixar/validar ZIP (tentativa {retry_state.attempt_number}/3): "
+        f"{type(erro).__name__}: {erro}. Nova tentativa será realizada."
+    )
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=8),
     retry=retry_if_exception_type((requests.RequestException, zipfile.BadZipFile)),
+    before_sleep=_log_retry_download,
     reraise=True,
 )
 def descarregar_zip(url: str, nome_zip: str, pasta_temp_tabela: str) -> str:
-    """Baixa e verifica o ZIP, sem extrair seus membros no disco."""
+    """Baixa e valida um ZIP da RFB, com diagnóstico de resposta truncada/não-ZIP."""
     nome_seguro = os.path.basename(nome_zip)
     if not nome_seguro.lower().endswith(".zip"):
         raise ValueError(f"Nome de arquivo ZIP inválido: {nome_zip!r}")
@@ -249,16 +260,33 @@ def descarregar_zip(url: str, nome_zip: str, pasta_temp_tabela: str) -> str:
     if os.path.exists(caminho_zip):
         os.remove(caminho_zip)
 
+    status_http = None
+    content_type = "desconhecido"
+    content_encoding = ""
+    tamanho_declarado = 0
+    bytes_recebidos = 0
+
     try:
         with requests.get(url, stream=True, headers=HEADERS, timeout=(30, 600)) as response:
+            status_http = response.status_code
+            content_type = response.headers.get("Content-Type", "desconhecido")
+            content_encoding = response.headers.get("Content-Encoding", "").lower()
+            tamanho_declarado = int(response.headers.get("Content-Length", 0) or 0)
+
             response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "text/html" in content_type:
-                raise zipfile.BadZipFile(f"A Receita retornou HTML em vez de ZIP: {url}")
-            total_size = int(response.headers.get("content-length", 0))
+            # Um 206 indica resposta parcial; não aceitamos ZIPs baixados por range.
+            if status_http != 200:
+                raise requests.HTTPError(
+                    f"Resposta HTTP inesperada para {nome_seguro}: status={status_http}. Esperado=200."
+                )
+            if "text/html" in content_type.lower():
+                raise zipfile.BadZipFile(
+                    f"A Receita retornou HTML em vez do ZIP {nome_seguro} (Content-Type={content_type})."
+                )
+
             with open(caminho_zip, "wb") as arquivo, tqdm(
                 desc=nome_seguro,
-                total=total_size or None,
+                total=tamanho_declarado or None,
                 unit="iB",
                 unit_scale=True,
                 unit_divisor=1024,
@@ -266,13 +294,63 @@ def descarregar_zip(url: str, nome_zip: str, pasta_temp_tabela: str) -> str:
             ) as barra:
                 for bloco in response.iter_content(chunk_size=2 * 1024 * 1024):
                     if bloco:
-                        barra.update(arquivo.write(bloco))
+                        bytes_recebidos += arquivo.write(bloco)
+                        barra.update(len(bloco))
 
-        with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
-            # A RFB usa extensões próprias nos CSVs internos (ex.: .EMPRECSV).
-            membros_dados = _membros_dados_rfb(zip_ref)
-            if not membros_dados:
-                raise ValueError(f"ZIP sem arquivos de dados: {nome_seguro}")
+        # Content-Length pode descrever bytes comprimidos quando há Content-Encoding.
+        if tamanho_declarado and content_encoding in {"", "identity"} and bytes_recebidos != tamanho_declarado:
+            raise requests.ConnectionError(
+                f"Download incompleto de {nome_seguro}: recebidos={bytes_recebidos:,} bytes; "
+                f"Content-Length={tamanho_declarado:,}."
+            )
+
+        try:
+            with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
+                membros_dados = _membros_dados_rfb(zip_ref)
+                if not membros_dados:
+                    raise ValueError(f"ZIP sem arquivos de dados: {nome_seguro}")
+        except zipfile.BadZipFile as exc:
+            # Guarda uma cópia fora do TemporaryDirectory: ele será removido ao
+            # final da extração, inclusive quando a exceção interrompe o fluxo.
+            tamanho_real = os.path.getsize(caminho_zip) if os.path.exists(caminho_zip) else 0
+            with open(caminho_zip, "rb") as arquivo:
+                inicio = arquivo.read(160)
+                arquivo.seek(max(0, tamanho_real - 65_557))
+                cauda = arquivo.read(65_557)
+
+            inicio_hex = inicio[:16].hex(" ") or "arquivo vazio"
+            inicio_legivel = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in inicio[:100])
+            eocd_pos = cauda.rfind(b"PK\x05\x06")
+            zip64_eocd_pos = cauda.rfind(b"PK\x06\x06")
+            central_dir_pos = cauda.rfind(b"PK\x01\x02")
+            cauda_hex = cauda[-48:].hex(" ") if cauda else "arquivo vazio"
+
+            caminho_diagnostico = "não foi possível preservar a cópia"
+            try:
+                pasta_diagnostico = os.path.join(PASTA_TEMP, "diagnostico_zip")
+                os.makedirs(pasta_diagnostico, exist_ok=True)
+                sufixo = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                caminho_diagnostico = os.path.join(
+                    pasta_diagnostico, f"{sufixo}_{nome_seguro}.invalido.zip"
+                )
+                shutil.copy2(caminho_zip, caminho_diagnostico)
+            except OSError as erro_copia:
+                caminho_diagnostico = f"falha ao copiar: {erro_copia}"
+
+            raise zipfile.BadZipFile(
+                f"Arquivo remoto {nome_seguro} não pôde ser validado como ZIP. "
+                f"HTTP={status_http}; Content-Type={content_type}; "
+                f"Content-Encoding={content_encoding or 'nenhum'}; "
+                f"Content-Length={tamanho_declarado or 'não informado'}; "
+                f"bytes recebidos={bytes_recebidos:,}; tamanho em disco={tamanho_real:,}; "
+                f"início HEX=[{inicio_hex}]; início legível=[{inicio_legivel}]; "
+                f"EOCD(PK\x05\x06) posição na janela final={eocd_pos}; "
+                f"ZIP64 EOCD(PK\x06\x06) posição na janela final={zip64_eocd_pos}; "
+                f"central directory(PK\x01\x02) última posição na janela final={central_dir_pos}; "
+                f"últimos 48 bytes HEX=[{cauda_hex}]; "
+                f"cópia preservada em=[{caminho_diagnostico}]."
+            ) from exc
+
         return caminho_zip
     except Exception:
         if os.path.exists(caminho_zip):
@@ -408,10 +486,46 @@ def _extrair_zip_rfb_para_s3(
     timestamp_ingestao = _timestamp_ingestao()
 
     arquivos_disponiveis = listar_arquivos_do_mes(mes_alvo)
-    arquivos_tabela = [
+    arquivos_tabela_brutos = sorted(
         arquivo for arquivo in arquivos_disponiveis
         if arquivo.startswith(config.prefixo_zip) and arquivo.lower().endswith(".zip")
-    ]
+    )
+
+    # A Receita pode publicar uma retificação com o padrão:
+    # Estabelecimentos6-RF0819000032530.zip.
+    # Quando há uma única retificação para o mesmo pacote-base, ela substitui
+    # o ZIP sem sufixo -RF; não se devem processar os dois, pois isso duplicaria
+    # registros. Se houver mais de uma retificação para o mesmo pacote, falhamos
+    # explicitamente em vez de escolher uma versão arbitrariamente.
+    grupos_arquivos = {}
+    for arquivo in arquivos_tabela_brutos:
+        nome_sem_extensao = arquivo[:-4]
+        correspondencia_rf = re.fullmatch(r"(?P<base>.+?)-RF(?P<codigo>\d+)", nome_sem_extensao, flags=re.IGNORECASE)
+        if correspondencia_rf:
+            base = correspondencia_rf.group("base")
+            grupos_arquivos.setdefault(base, {"originais": [], "retificacoes": []})["retificacoes"].append(arquivo)
+        else:
+            grupos_arquivos.setdefault(nome_sem_extensao, {"originais": [], "retificacoes": []})["originais"].append(arquivo)
+
+    arquivos_tabela = []
+    for base, grupo in sorted(grupos_arquivos.items()):
+        retificacoes = grupo["retificacoes"]
+        originais = grupo["originais"]
+        if len(retificacoes) > 1:
+            raise ValueError(
+                f"Mais de uma retificação encontrada para o pacote {base}: {retificacoes}. "
+                "É necessário definir qual versão é vigente antes de consolidar os dados."
+            )
+        if retificacoes:
+            arquivos_tabela.append(retificacoes[0])
+            if originais:
+                print(
+                    f"  ♻️ Retificação selecionada: {retificacoes[0]} "
+                    f"(substitui {', '.join(originais)})."
+                )
+        else:
+            arquivos_tabela.extend(originais)
+
     if not arquivos_tabela:
         raise FileNotFoundError(
             f"Nenhum ZIP encontrado para {config.nome_tabela} "
@@ -421,6 +535,7 @@ def _extrair_zip_rfb_para_s3(
     try:
         for nome_arquivo in arquivos_tabela:
             url = f"{_url_download_base()}/{mes_alvo}/{urllib.parse.quote(nome_arquivo, safe='')}"
+            print(f"  📦 Baixando arquivo de origem: {nome_arquivo}")
             caminho_zip = descarregar_zip(url, nome_arquivo, pasta_temp_tabela)
             with zipfile.ZipFile(caminho_zip, "r") as zip_ref:
                 # Os CSVs da Receita têm extensões próprias, não necessariamente .csv.
