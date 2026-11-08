@@ -164,6 +164,12 @@ est_matriz AS (
       AND cnpj_basico IS NOT NULL
       AND valid_since IS NOT NULL
       AND valid_since < COALESCE(valid_until, '9999-12')
+    -- A Receita às vezes marca mais de um estabelecimento como matriz do mesmo CNPJ raiz (B19).
+    -- Matriz canônica: ordem 0001; na falta dela, a menor ordem. Mantém todas as versões dessa matriz.
+    QUALIFY DENSE_RANK() OVER (
+        PARTITION BY cnpj_basico
+        ORDER BY CASE WHEN cnpj_ordem = '0001' THEN 0 ELSE 1 END, cnpj_ordem
+    ) = 1
 ),
 emp_limpa AS (
     SELECT

@@ -9,7 +9,8 @@ WITH metricas AS (
     FROM tcc_receita.silver_final.dim_empresa
 ),
 colisoes_sk AS (
-    SELECT COUNT(*) AS qtd_colisoes
+    SELECT COUNT(*) AS qtd_colisoes,
+           CONCAT_WS(', ', SLICE(COLLECT_LIST(CAST(sk_empresa AS STRING)), 1, 5)) AS amostra_colisoes
     FROM (
         SELECT sk_empresa 
         FROM tcc_receita.silver_final.dim_empresa
@@ -52,7 +53,7 @@ SELECT
     ASSERT_TRUE(m.ativos_com_fim = 0, CONCAT('ERRO DQ [dim_empresa]: ', m.ativos_com_fim, ' registos ativos com fim_vigencia preenchido!')),
     ASSERT_TRUE(m.inativos_invalidos = 0, CONCAT('ERRO DQ [dim_empresa]: ', m.inativos_invalidos, ' registos inativos com intervalo inválido!')),
     ASSERT_TRUE(m.enriquecidos_cep > 0, 'ERRO DQ [dim_empresa]: Nenhum registo foi enriquecido pela tabela de CEPs!'),
-    ASSERT_TRUE(c.qtd_colisoes = 0, CONCAT('ERRO DQ [dim_empresa]: ', c.qtd_colisoes, ' colisões ou duplicidades de sk_empresa!')),
+    ASSERT_TRUE(c.qtd_colisoes = 0, CONCAT('ERRO DQ [dim_empresa]: ', c.qtd_colisoes, ' colisões ou duplicidades de sk_empresa! Amostra de sk: ', COALESCE(c.amostra_colisoes, ''))),
     ASSERT_TRUE(s.qtd_sobreposicoes = 0, CONCAT('ERRO DQ [dim_empresa]: ', s.qtd_sobreposicoes, ' sobreposições de intervalos temporais detectadas!')),
     ASSERT_TRUE(ma.qtd_cnpj_multi_ativo = 0, CONCAT('ERRO DQ [dim_empresa]: ', ma.qtd_cnpj_multi_ativo, ' CNPJs com mais de uma versão ativa simultânea!')),
     ASSERT_TRUE(og.qtd_orfaos_cnae = 0, CONCAT('ERRO DQ [dim_empresa]: ', og.qtd_orfaos_cnae, ' sk_grupo_cnae órfãs em relação à dim_grupo_cnae!'))
