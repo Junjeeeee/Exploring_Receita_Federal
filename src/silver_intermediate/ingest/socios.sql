@@ -85,7 +85,7 @@ USING (
             NULLIF(TRIM(cnpj_cpf_socio), '') AS cnpj_cpf_socio,
             NULLIF(TRIM(qualificacao_socio), '') AS qualificacao_socio,
             CASE
-                WHEN to_date(TRIM(data_entrada_sociedade), 'yyyyMMdd') IS NOT NULL
+                WHEN try_to_date(TRIM(data_entrada_sociedade), 'yyyyMMdd') IS NOT NULL
                 THEN TRIM(data_entrada_sociedade)
                 ELSE NULL
             END AS data_entrada_sociedade,

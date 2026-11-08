@@ -41,14 +41,14 @@ ev_inicio_atividade_empresa AS (
         CAST(NULL AS STRING) AS valor_antigo,
         'ATIVIDADE INICIADA' AS valor_novo,
         CONCAT('Data informada pela Receita Federal: ', est.data_inicio_atividade) AS informacao_adicional,
-        date_format(to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd'), 'yyyy-MM') AS mes_referencia
+        date_format(try_to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd'), 'yyyy-MM') AS mes_referencia
     FROM tcc_receita.silver_intermediate.estabelecimentos est
     INNER JOIN tcc_receita.silver_intermediate.empresas emp
         ON emp.cnpj_basico = est.cnpj_basico
     CROSS JOIN params p
     WHERE est.identificador_matriz_filial = '1'
-      AND to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd') IS NOT NULL
-      AND date_format(to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd'), 'yyyy-MM') BETWEEN p.mes_ini AND p.mes_fim
+      AND try_to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd') IS NOT NULL
+      AND date_format(try_to_date(TRIM(est.data_inicio_atividade), 'yyyyMMdd'), 'yyyy-MM') BETWEEN p.mes_ini AND p.mes_fim
 ),
 -- 2. Mudanças na situação cadastral ou no motivo do estabelecimento.
 ev_estado_cadastral AS (
@@ -212,12 +212,12 @@ ev_socio_entrou AS (
         CAST(NULL AS STRING) AS valor_antigo,
         'ATIVO' AS valor_novo,
         CONCAT('Data de entrada informada pela Receita Federal: ', s.data_entrada_sociedade) AS informacao_adicional,
-        date_format(to_date(s.data_entrada_sociedade, 'yyyyMMdd'), 'yyyy-MM') AS mes_referencia
+        date_format(try_to_date(s.data_entrada_sociedade, 'yyyyMMdd'), 'yyyy-MM') AS mes_referencia
     FROM tcc_receita.silver_intermediate.socios s
     CROSS JOIN params p
     WHERE s.vinculo_ativo = TRUE
-      AND to_date(s.data_entrada_sociedade, 'yyyyMMdd') IS NOT NULL
-      AND date_format(to_date(s.data_entrada_sociedade, 'yyyyMMdd'), 'yyyy-MM') BETWEEN p.mes_ini AND p.mes_fim
+      AND try_to_date(s.data_entrada_sociedade, 'yyyyMMdd') IS NOT NULL
+      AND date_format(try_to_date(s.data_entrada_sociedade, 'yyyyMMdd'), 'yyyy-MM') BETWEEN p.mes_ini AND p.mes_fim
 ),
 -- 11. Saída do QSA: a data é o mês do primeiro snapshot completo em que a relação não aparece.
 ev_socio_saiu AS (

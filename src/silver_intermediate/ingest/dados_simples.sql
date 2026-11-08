@@ -60,16 +60,16 @@ USING (
                 WHEN UPPER(TRIM(opcao_pelo_simples)) = 'N' THEN FALSE
                 ELSE CAST(NULL AS BOOLEAN)
             END AS opcao_pelo_simples_bool,
-            CASE WHEN to_date(TRIM(data_opcao_simples), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_opcao_simples) ELSE NULL END AS data_opcao_simples,
-            CASE WHEN to_date(TRIM(data_exclusao_simples), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_exclusao_simples) ELSE NULL END AS data_exclusao_simples,
+            CASE WHEN try_to_date(TRIM(data_opcao_simples), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_opcao_simples) ELSE NULL END AS data_opcao_simples,
+            CASE WHEN try_to_date(TRIM(data_exclusao_simples), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_exclusao_simples) ELSE NULL END AS data_exclusao_simples,
             NULLIF(TRIM(opcao_pelo_mei), '') AS opcao_pelo_mei,
             CASE
                 WHEN UPPER(TRIM(opcao_pelo_mei)) = 'S' THEN TRUE
                 WHEN UPPER(TRIM(opcao_pelo_mei)) = 'N' THEN FALSE
                 ELSE CAST(NULL AS BOOLEAN)
             END AS opcao_pelo_mei_bool,
-            CASE WHEN to_date(TRIM(data_opcao_mei), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_opcao_mei) ELSE NULL END AS data_opcao_mei,
-            CASE WHEN to_date(TRIM(data_exclusao_mei), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_exclusao_mei) ELSE NULL END AS data_exclusao_mei,
+            CASE WHEN try_to_date(TRIM(data_opcao_mei), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_opcao_mei) ELSE NULL END AS data_opcao_mei,
+            CASE WHEN try_to_date(TRIM(data_exclusao_mei), 'yyyyMMdd') IS NOT NULL THEN TRIM(data_exclusao_mei) ELSE NULL END AS data_exclusao_mei,
             mes_referencia,
             bronze_processed_at AS inserted_at,
             change_hash
