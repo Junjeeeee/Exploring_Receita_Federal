@@ -48,3 +48,14 @@ fonte citável para o agrupamento (é a convenção usada pelo Sebrae; verificar
 
 ## D-11 — ~~DQ: não redesenhar~~ (removida em 2026-11-08)
 Era regra para outro assistente. DQ pode ser melhorado/redesenhado. Convenção `ASSERT_TRUE` segue como padrão atual.
+
+## D-12 — Modo protótipo dispensa spec prévia
+2026-11-08 · aceita
+**Contexto:** primeira execução no Databricks e dashboard para a reunião de 09/11; specs completas antes atrasariam.
+**Decisão:** durante prototipação/testes, correções que destravam a execução vão direto ao código, cada uma com
+commit próprio e item no backlog. Mudanças de arquitetura ou de regra de negócio continuam exigindo spec.
+**Alternativas:** spec antes de tudo (lento demais para o prazo); sem registro nenhum (perde rastreabilidade
+para o TCC e para a declaração de uso de IA).
+**Motivo:** velocidade sem perder rastreabilidade.
+**Consequências:** escrever spec retroativa ao sair do protótipo — pendentes: `job-databricks` (runners +
+Job JSON) e `carga-inicial` (B9).
