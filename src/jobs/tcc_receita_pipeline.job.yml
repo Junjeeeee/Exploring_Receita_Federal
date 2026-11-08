@@ -37,6 +37,9 @@ resources:
             spark.scheduler.mode: "FAIR"
           spark_env_vars:
             AWS_BUCKET_NAME: lakehouse-receita
+          cluster_log_conf:
+            volumes:
+              destination: /Volumes/tcc_receita/ops/cluster_logs
           custom_tags:
             projeto: tcc_receita
       tasks:

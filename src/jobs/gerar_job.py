@@ -89,6 +89,9 @@ CLUSTER = {
             "spark.scheduler.mode": "FAIR",
         },
         "spark_env_vars": {"AWS_BUCKET_NAME": "lakehouse-receita"},
+        # Logs do driver + event log do Spark (stages, shuffle, spill) sobrevivem ao fim do cluster.
+        # Volume criado uma vez: tcc_receita.ops.cluster_logs (ver README).
+        "cluster_log_conf": {"volumes": {"destination": "/Volumes/tcc_receita/ops/cluster_logs"}},
         "custom_tags": {"projeto": "tcc_receita"},
     },
 }

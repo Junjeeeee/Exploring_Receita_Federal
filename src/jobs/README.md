@@ -48,5 +48,9 @@ Fora do Job: `ds_micro_*.sql` são consultas do dashboard (parâmetros `:param_*
   `CREATE CATALOG tcc_receita MANAGED LOCATION 's3://<bucket>/unity/tcc_receita/'`.
   **Não usar Default Storage**: ele só é acessível por compute serverless, e o Job roda em cluster clássico.
 - Leitura de `s3://<bucket>/landing/receita_federal/` pelo cluster.
+- Volume de logs `tcc_receita.ops.cluster_logs` (usado por `cluster_log_conf`): *Catalog → tcc_receita → Create schema*
+  `ops` → *Create volume* `cluster_logs` (managed). Sem ele o cluster não sobe. Logs ficam em
+  `/Volumes/tcc_receita/ops/cluster_logs/<cluster_id>/` (`driver/`, `eventlog/` = métricas do Spark UI).
+  Leitura: `databricks fs ls dbfs:/Volumes/tcc_receita/ops/cluster_logs/`.
 - `bronze.cnaes` (CNAE da Receita) **não** é ingerido: não existe na landing; usa-se `cnaes_ibge`.
 - 2023-05 é o primeiro mês publicado: a janela começando nele é **carga inicial** (sem eventos no mês).
