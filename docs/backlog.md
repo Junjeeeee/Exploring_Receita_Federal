@@ -26,6 +26,7 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | C-12 | Dashboard listava razão social de empresário individual | T4, T6 | 🧪 |
 | C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | 🧪 |
 | C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | 🧪 |
+| — | Dashboard v2: 6 páginas com pergunta por página, big numbers do último mês com Δ, idade na baixa (`fato_empresa_mes`). Validado na amostra; prévia atualizada; **renderização não conferida** (risco: contadores com `try_divide`) | [`specs/features/2026-11-14-dashboard-v2-narrativa.md`](specs/features/2026-11-14-dashboard-v2-narrativa.md) | 🧪 |
 | — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** — passo a passo na spec §5 |
 
 ## Decisões pendentes do autor

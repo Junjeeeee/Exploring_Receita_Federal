@@ -1,6 +1,7 @@
 # Feature: Dashboard v0 (reunião de 2026-11-09)
 
-Status: **preparado, não testado** (atualizado em 2026-11-14 para a semântica de eventos) · 2026-11-08 · modo protótipo (D-12), spec retroativa resumida.
+Status: **substituído pela v2** — [`2026-11-14-dashboard-v2-narrativa.md`](2026-11-14-dashboard-v2-narrativa.md) (layout em 6 páginas). Datasets, LGPD e pendências abaixo continuam valendo onde a v2 não diz o contrário.
+Status anterior: **preparado, não testado** (atualizado em 2026-11-14 para a semântica de eventos) · 2026-11-08 · modo protótipo (D-12), spec retroativa resumida.
 
 ## Requisito
 Dashboard no Databricks AI/BI para mostrar a dinâmica empresarial (aberturas, baixas, eventos, mercado ativo)

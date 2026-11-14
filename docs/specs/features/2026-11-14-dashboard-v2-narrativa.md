@@ -1,6 +1,6 @@
 # Feature: dashboard v2 — narrativa em 6 páginas
 
-**Status:** em implementação · 2026-11-14 (plano aprovado pelo autor em 2026-11-14; detalhes de widget delegados)
+**Status:** implementado e validado na amostra de 1%; **renderização não conferida** · 2026-11-14 (plano aprovado pelo autor em 2026-11-14; detalhes de widget delegados)
 **Camadas afetadas:** gold (`fato_empresa_mes`, `dq_gold.sql`), dashboard (`src/gold/dashboard/`)
 **Branch:** `worktree-dashboard-segunda`
 **Substitui:** o layout de [`dashboard-v0.md`](dashboard-v0.md) (datasets e regras de LGPD continuam valendo).
@@ -64,9 +64,12 @@ Removidos: `estoque` (substituído por `resumo_mes`) e `situacao` (ver 2.5).
 | `extremos_setor` / `extremos_uf` | `fato_indicadores_setoriais_mes` | 2 linhas | "mais cresce" e "mais encolhe" (taxa de saldo por 1.000 ativas, com piso de volume) |
 
 Piso de volume dos rankings **[padrão]**: média mensal de ativas no início do mês ≥ 100 (na base real todas
-as UFs e áreas passam; na amostra de 1% o piso tira ruído de UFs pequenas). UF `NI` fica fora dos rankings.
+as UFs e áreas passam; na amostra de 1% o piso tira ruído de UFs pequenas). Rótulos de "não sei" ficam fora dos
+rankings: UF `NI` e `EX` (exterior); áreas `OUTROS / NAO ESPECIFICADO` e `CODIGO NAO LOCALIZADO`.
 
 ### 2.4 Páginas
+
+Nomes de widget abaixo sem o prefixo de página; no código levam o número da página (`c1_ativas`, `b4_idade`…).
 
 Grade de 12 colunas. "Filtros" = filtros de campo da página e os datasets que eles alcançam.
 
@@ -147,21 +150,41 @@ Resultados passam a seguir as 6 perguntas; "idade na baixa" é definição nova 
 
 ## 3. Tarefas
 
-- [ ] T1 `fato_empresa_mes.sql`: `idade_na_baixa_meses`, `faixa_idade_baixa`; DQ em `dq_gold.sql`
-- [ ] T2 `gerar_dashboard.py`: 6 páginas, datasets novos, `validar()` ampliado (todas as páginas com texto de abertura; contadores só com agregação); JSON regenerado; README
-- [ ] T3 Amostra: `fato_empresa_mes` + painel + DQ gold; cada dataset do dashboard executado (sem erro, linhas > 0); filtros simulados nos contadores; identidade de estoque
-- [ ] T4 Atualizar a prévia (`01f1e03111521e8fa0a9cf1aa4f96e4e`) e ler de volta pela API
-- [ ] T5 Backlog (Alvo atual), `dashboard-v0.md` apontando para esta spec
+- [x] T1 `fato_empresa_mes.sql`: `idade_na_baixa_meses`, `faixa_idade_baixa`; DQ em `dq_gold.sql`
+- [x] T2 `gerar_dashboard.py`: 6 páginas, datasets novos, `validar()` ampliado (todas as páginas com texto de abertura; contadores só com agregação); JSON regenerado; README
+- [x] T3 Amostra: `fato_empresa_mes` + painel + DQ gold; cada dataset do dashboard executado (sem erro, linhas > 0); filtros simulados nos contadores; identidade de estoque
+- [x] T4 Atualizar a prévia (`01f1e03111521e8fa0a9cf1aa4f96e4e`) e ler de volta pela API
+- [x] T5 Backlog (Alvo atual), `dashboard-v0.md` apontando para esta spec
 
 ## 4. Critérios de aceite
 
-- [ ] DQ gold passa na amostra (incluindo os novos de idade na baixa).
-- [ ] Todos os datasets executam na amostra com linhas > 0.
-- [ ] Contadores do resumo: `ativas_fim(M) = ativas_fim(M−1) + saldo(M)`; % MEI das baixas perto de 70% (amostra).
-- [ ] Filtro de UF e de porte nos datasets dos contadores devolve subconjunto coerente (soma das UFs = Brasil).
-- [ ] Prévia atualizada com 6 páginas; `validar()` sem erro.
+- [x] DQ gold passa na amostra (incluindo os novos de idade na baixa).
+- [x] Todos os datasets executam na amostra com linhas > 0.
+- [x] Contadores do resumo: `ativas_fim(M) = ativas_fim(M−1) + saldo(M)`; % MEI das baixas perto de 70% (amostra).
+- [x] Filtro de UF e de porte nos datasets dos contadores devolve subconjunto coerente (soma das UFs = Brasil).
+- [x] Prévia atualizada com 6 páginas; `validar()` sem erro.
 - [ ] Renderização conferida no workspace (pelo autor: não há login de navegador no ambiente do agente).
 
 ## 5. Notas de execução
 
-(preencher)
+**2026-11-14 — amostra de 1%, SQL warehouse serverless** (`scripts/amostra/`):
+
+- `fato_empresa_mes` recriada na amostra (`DROP` em `amostra_gold` por causa das colunas novas) + painel + `dq_gold.sql`:
+  tudo passou. Baixas por faixa: 00-01 ano 1.308 · 01-02 926 · 02-05 1.442 · 05-10 770 · 10+ 658 · **sem data 0**.
+- Os 17 datasets executam (linhas > 0) e as 37 consultas de widget (fora filtros e textos) foram simuladas em SQL (mesmas expressões dos
+  campos) sem erro, sem filtro, com `uf = 'SP'` e com `porte_empresa = 'MEI'`.
+- Big numbers (Brasil, amostra): último mês 2023-08 × 2023-07. Ativas 228.024 (Δ +2.740 = saldo: identidade
+  fecha); aberturas 4.060 (Δ +865); baixas 1.826 (Δ +252); saldo 2.740 (Δ +719); 2,22 aberturas por baixa (2,03 no
+  mês anterior). MEI = 72,8% das aberturas e 67,4% das baixas. Falência = 0,08% das baixas (4 de 5.104). Idade
+  mediana na baixa 2,4 anos; 43,8% fecham com menos de 2 anos. 1.108 reativações. Setor: Serviços (+11,3‰) e
+  Agropecuária (+5,8‰). UF: RR (+22,4‰) e AP (+4,7‰) — na amostra, ruído de UF pequena.
+- Com filtro, Δ ativas ≠ saldo (SP: 779 × 783; MEI: 1.699 × 1.928) porque empresas trocam de UF/porte/setor; o
+  texto do contador explica. Soma dos grupos = Brasil por construção (o widget só soma linhas).
+- Achado: nenhuma transição ATIVA → INAPTA na amostra em jun–ago/2023 (inaptidões = 0 nos três meses); as
+  transições INAPTA → ATIVA/BAIXADA existem. Provável calendário de lotes da Receita; conferir na base real.
+- Prévia `01f1e03111521e8fa0a9cf1aa4f96e4e` atualizada e lida de volta pela API: 6 páginas, 54 widgets,
+  17 datasets apontando para `amostra_*`. **Renderização não conferida** (sem navegador no ambiente).
+  Maior risco: `c1_ab_por_baixa`, `c1_ab_por_baixa_ant` (`try_divide(SUM, SUM)`), depois `c4_idade` (`PERCENTILE`).
+
+**Para a base real:** nenhuma migração além da já prevista (`fato_empresa_mes` está no `DROP` de
+`src/jobs/migracoes/2026-11-14_semantica_eventos.sql`); nenhum arquivo SQL novo, Job inalterado.
