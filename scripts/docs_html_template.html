@@ -195,10 +195,12 @@ marked.use({
     link(href, title, text) {
       if (/^[a-z]+:/i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noopener">${text}</a>`;
       const d = resolver(href, docAtual);
+      text = text.replace(/<\/?a\b[^>]*>/g, "");  // codespan dentro do texto do link não vira <a> aninhado
       return d ? `<a href="#${d.slug}">${text}</a>` : `<span class="path" title="${esc(href)}">${text}</span>`;
     },
     codespan(text) {
-      const d = porCaminho.get(text.replace(/&amp;/g, "&"));
+      const bruto = text.replace(/&amp;/g, "&");
+      const d = /\.md$/i.test(bruto) ? resolver(bruto, docAtual) : null;
       return d ? `<a href="#${d.slug}"><code>${text}</code></a>` : `<code>${text}</code>`;
     },
     heading(text, level) {
@@ -298,12 +300,12 @@ function renderInicio() {
 
     <section class="secao">
       <h2>Estado do backlog</h2>
-      <p>Contado da tabela de bugs em <code>docs/backlog.md</code> quando esta página foi gerada.</p>
+      <p>Contado pela coluna de estado das tabelas de <code>docs/backlog.md</code> quando esta página foi gerada.</p>
       <div class="estado">
-        <a class="tile bad" href="${linkBacklog}"><b>${b.criticos}</b><span>críticos abertos 🔴</span></a>
-        <a class="tile warn" href="${linkBacklog}"><b>${b.altos}</b><span>altos abertos 🟠</span></a>
-        <a class="tile" href="${linkBacklog}"><b>${b.abertos}</b><span>itens abertos no total</span></a>
-        <a class="tile" href="${linkBacklog}"><b>${b.resolvidos}</b><span>resolvidos</span></a>
+        <a class="tile bad" href="${linkBacklog}"><b>${b.abertos}</b><span>abertos ⬜</span></a>
+        <a class="tile warn" href="${linkBacklog}"><b>${b.amostra + b.prontos}</b><span>validados na amostra 🧪 ou com código pronto 🔧, falta rodar na base</span></a>
+        <a class="tile" href="${linkBacklog}"><b>${b.decisoes}</b><span>decisões pendentes do autor</span></a>
+        <a class="tile" href="${linkBacklog}"><b>${b.feitos}</b><span>feitos ✅</span></a>
       </div>
     </section>
 

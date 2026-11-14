@@ -1,6 +1,6 @@
 """Gera um site estático (um único HTML) com a documentação do projeto.
 
-Lê os Markdown do repositório (CLAUDE.md, docs/**, READMEs de src/), embute o texto no HTML e
+Lê os Markdown do repositório (CLAUDE.md, docs/**, READMEs de src/ e scripts/), embute o texto no HTML e
 renderiza no navegador com `marked`. Nada é escrito à mão: rodar de novo após editar os .md.
 
 Uso (da raiz do repo):
@@ -22,25 +22,35 @@ SAIDA_PADRAO = RAIZ / "docs" / "_site" / "index.html"
 
 # Grupos da navegação, na ordem em que aparecem. Cada .md cai no primeiro grupo cujo teste aceitar.
 GRUPOS = [
-    ("Projeto", lambda p: p in {"CLAUDE.md", "docs/architecture.md", "docs/glossario.md",
-                                 "docs/decisions.md", "docs/backlog.md"}),
+    ("Comece aqui", lambda p: p in {"CLAUDE.md", "docs/architecture.md", "docs/backlog.md", "docs/critica.md"}),
     ("Specs por camada", lambda p: p.startswith("docs/specs/") and p.count("/") == 2),
+    # Features: as datadas (AAAA-MM-DD-*) primeiro, da mais recente para a mais antiga (ver ordenar()).
     ("Features", lambda p: p.startswith("docs/specs/features/")),
-    ("Código", lambda p: p.startswith("src/")),
-    ("TCC", lambda p: p.startswith("docs/")),
+    ("Referência", lambda p: p in {"docs/decisions.md", "docs/glossario.md"}),
+    ("Código", lambda p: p.startswith(("src/", "scripts/"))),
+    ("TCC", lambda p: p in {"docs/tcc.md", "docs/mineracao_receita.md"}),
+    ("Histórico", lambda p: True),  # o que sobrar (ex.: backlog_historico.md) vai para o fim
 ]
-ORDEM = ["CLAUDE.md", "docs/architecture.md", "docs/glossario.md", "docs/decisions.md", "docs/backlog.md",
+ORDEM = ["CLAUDE.md", "docs/architecture.md", "docs/backlog.md", "docs/critica.md",
          "docs/specs/landing.md", "docs/specs/bronze.md", "docs/specs/silver_intermediate.md",
          "docs/specs/silver_final.md", "docs/specs/gold.md", "docs/specs/_template.md",
-         "docs/tcc.md", "docs/mineracao_receita.md"]
+         "docs/decisions.md", "docs/glossario.md", "docs/tcc.md", "docs/mineracao_receita.md"]
+
+
+def ordenar(c: str) -> tuple:
+    grupo = next(i for i, (_, teste) in enumerate(GRUPOS) if teste(c))
+    datada = re.match(r"docs/specs/features/(\d{4}-\d{2}-\d{2})", c)
+    data = -int(datada.group(1).replace("-", "")) if datada else 0  # negativo = mais recente primeiro
+    return (grupo, ORDEM.index(c) if c in ORDEM else len(ORDEM), not datada, data, c)
 
 
 def listar_markdown() -> list[str]:
     caminhos = ["CLAUDE.md"]
     caminhos += [p.relative_to(RAIZ).as_posix() for p in (RAIZ / "docs").rglob("*.md") if "_site" not in p.parts]
-    caminhos += [p.relative_to(RAIZ).as_posix() for p in (RAIZ / "src").rglob("*.md")
-                 if p.name.lower() == "readme.md"]
-    return sorted(set(caminhos), key=lambda c: (ORDEM.index(c) if c in ORDEM else len(ORDEM), c))
+    for pasta in ("src", "scripts"):
+        caminhos += [p.relative_to(RAIZ).as_posix() for p in (RAIZ / pasta).rglob("*.md")
+                     if p.name.lower() == "readme.md"]
+    return sorted(set(caminhos), key=ordenar)
 
 
 def slug(caminho: str) -> str:
@@ -73,14 +83,17 @@ def resumo(texto: str) -> str:
 
 
 def estado_backlog(texto: str) -> dict:
-    """Conta itens da tabela de bugs: abertos por severidade e resolvidos (riscados)."""
-    linhas = [l for l in texto.splitlines() if re.match(r"\|\s*(~~)?B\d+", l)]
-    abertos = [l for l in linhas if not l.lstrip("| ").startswith("~~")]
+    """Conta as linhas das tabelas do backlog pelo emoji de estado da última coluna
+    (⬜ aberto · 🔧 código pronto · 🧪 validado na amostra · ✅ feito) e as decisões pendentes (D-x)."""
+    linhas = [[c.strip() for c in l.strip().strip("|").split("|")] for l in texto.splitlines()
+              if l.lstrip().startswith("|")]
+    estados = [l[-1] for l in linhas if len(l) > 1]
     return {
-        "criticos": sum("🔴" in l.split("|")[1] for l in abertos),
-        "altos": sum("🟠" in l.split("|")[1] for l in abertos),
-        "abertos": len(abertos),
-        "resolvidos": len(linhas) - len(abertos),
+        "abertos": sum(e.startswith("⬜") for e in estados),
+        "prontos": sum(e.startswith("🔧") for e in estados),
+        "amostra": sum(e.startswith("🧪") for e in estados),
+        "feitos": sum(e.startswith("✅") for e in estados),
+        "decisoes": sum(bool(re.match(r"D-[a-z]\b", l[0])) for l in linhas),
     }
 
 
@@ -95,7 +108,7 @@ def coletar() -> dict:
     docs = []
     for caminho in listar_markdown():
         texto = (RAIZ / caminho).read_text(encoding="utf-8")
-        grupo = next(nome for nome, teste in GRUPOS if teste(caminho) or nome == "TCC")
+        grupo = next(nome for nome, teste in GRUPOS if teste(caminho))
         docs.append({"caminho": caminho, "slug": slug(caminho), "titulo": titulo(texto, caminho),
                      "grupo": grupo, "resumo": resumo(texto), "md": texto})
     backlog = next((d["md"] for d in docs if d["caminho"] == "docs/backlog.md"), "")
