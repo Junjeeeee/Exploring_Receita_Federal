@@ -31,7 +31,7 @@ decisões: `docs/specs/features/job-databricks.md`.
 
 | Prefixo | Executa |
 |---|---|
-| `bronze_<t>` → `bronze_dq_<t>` | `run_bronze.py --modo ingestao|dq` (11 tabelas, em paralelo) |
+| `bronze_<t>` → `bronze_dq_<t>` | `run_bronze.py --modo ingestao\|dq` (11 tabelas, em paralelo) |
 | `si_<t>` → `si_dq_<t>` | SCD2 e `log_eventos_negocio` |
 | `sf_<t>` → `sf_dq_<t>` | dimensões, ponte e `fato_mudanca_estado` |
 | `gold_<t>`, `gold_dq_gold` | fatos, OBT, mercado ativo, coorte, views `ds_*` |
