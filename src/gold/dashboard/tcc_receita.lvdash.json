@@ -10,12 +10,17 @@
         "    uf,\n",
         "    porte_empresa,\n",
         "    grande_area_cnae,\n",
-        "    SUM(estoque_inicial_ativas) AS estoque_inicial_ativas,\n",
-        "    SUM(qtd_aberturas)          AS qtd_aberturas,\n",
-        "    SUM(qtd_baixas)             AS qtd_baixas,\n",
-        "    SUM(qtd_falencias)          AS qtd_falencias,\n",
-        "    SUM(qtd_inaptidoes)         AS qtd_inaptidoes,\n",
-        "    SUM(crescimento_liquido)    AS crescimento_liquido\n",
+        "    SUM(estoque_inicial_ativas)  AS estoque_inicial_ativas,\n",
+        "    SUM(qtd_aberturas)           AS qtd_aberturas,\n",
+        "    SUM(qtd_baixas)              AS qtd_baixas,\n",
+        "    SUM(qtd_falencias)           AS qtd_falencias,\n",
+        "    SUM(qtd_inaptidoes)          AS qtd_inaptidoes,\n",
+        "    SUM(qtd_reativacoes)         AS qtd_reativacoes,\n",
+        "    SUM(qtd_entradas_estoque)    AS qtd_entradas_estoque,\n",
+        "    SUM(qtd_saidas_estoque)      AS qtd_saidas_estoque,\n",
+        "    SUM(qtd_baixas_de_ativas)    AS qtd_baixas_de_ativas,\n",
+        "    SUM(qtd_suspensoes)          AS qtd_suspensoes,\n",
+        "    SUM(crescimento_liquido)     AS crescimento_liquido\n",
         "FROM tcc_receita.gold.fato_indicadores_setoriais_mes\n",
         "WHERE mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)\n",
         "GROUP BY ALL\n"
@@ -37,11 +42,23 @@
       "queryLines": [
         "SELECT\n",
         "    grande_area_cnae,\n",
-        "    ROUND(1000.0 * SUM(qtd_aberturas) / NULLIF(SUM(estoque_inicial_ativas), 0), 2) AS taxa_abertura_por_mil,\n",
-        "    ROUND(1000.0 * SUM(qtd_baixas)    / NULLIF(SUM(estoque_inicial_ativas), 0), 2) AS taxa_fechamento_por_mil\n",
+        "    ROUND(1000.0 * SUM(qtd_aberturas)        / NULLIF(SUM(estoque_inicial_ativas), 0), 2) AS taxa_abertura_por_mil,\n",
+        "    ROUND(1000.0 * SUM(qtd_baixas_de_ativas) / NULLIF(SUM(estoque_inicial_ativas), 0), 2) AS taxa_fechamento_por_mil\n",
         "FROM tcc_receita.gold.fato_indicadores_setoriais_mes\n",
         "WHERE mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)\n",
         "GROUP BY grande_area_cnae\n"
+      ]
+    },
+    {
+      "name": "taxas_uf",
+      "displayName": "Crescimento líquido por 1.000 ativas, por UF (média mensal do período)",
+      "queryLines": [
+        "SELECT\n",
+        "    uf,\n",
+        "    ROUND(1000.0 * SUM(crescimento_liquido) / NULLIF(SUM(estoque_inicial_ativas), 0), 2) AS taxa_crescimento_por_mil\n",
+        "FROM tcc_receita.gold.fato_indicadores_setoriais_mes\n",
+        "WHERE mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)\n",
+        "GROUP BY uf\n"
       ]
     },
     {
@@ -52,11 +69,29 @@
         "    data_referencia,\n",
         "    tipo_evento,\n",
         "    categoria_macro_evento,\n",
+        "    entidade_tipo,\n",
+        "    eh_matriz,\n",
         "    uf,\n",
         "    porte_empresa,\n",
         "    grande_area_cnae,\n",
         "    COUNT(*) AS qtd_eventos\n",
         "FROM tcc_receita.gold.obt_dashboard_eventos\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "situacao",
+      "displayName": "Empresas com mudança de situação cadastral (matriz)",
+      "queryLines": [
+        "SELECT\n",
+        "    data_referencia,\n",
+        "    categoria_macro_evento,\n",
+        "    uf,\n",
+        "    porte_empresa,\n",
+        "    grande_area_cnae,\n",
+        "    COUNT(DISTINCT cnpj_raiz) AS qtd_empresas\n",
+        "FROM tcc_receita.gold.obt_dashboard_eventos\n",
+        "WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL' AND eh_matriz = TRUE\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -96,13 +131,31 @@
       ]
     },
     {
+      "name": "mercado_bairros",
+      "displayName": "Mercado ativo: 20 maiores bairros por município",
+      "queryLines": [
+        "SELECT uf, municipio, bairro, empresas_ativas\n",
+        "FROM (\n",
+        "    SELECT\n",
+        "        uf, municipio, bairro,\n",
+        "        COUNT(*) AS empresas_ativas,\n",
+        "        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY COUNT(*) DESC) AS posicao\n",
+        "    FROM tcc_receita.gold.dashboard_mercado_ativo\n",
+        "    GROUP BY uf, municipio, bairro\n",
+        ")\n",
+        "WHERE posicao <= 20\n"
+      ]
+    },
+    {
       "name": "mercado_empresas",
-      "displayName": "Maiores empresas ativas (não MEI)",
+      "displayName": "Maiores empresas ativas (razão social liberada)",
       "queryLines": [
         "SELECT razao_social, nome_fantasia, porte_empresa, capital_social, data_inicio_atividade,\n",
         "       uf, municipio, bairro, grande_area_cnae, nome_cnae\n",
         "FROM tcc_receita.gold.dashboard_mercado_ativo\n",
-        "WHERE NOT COALESCE(opcao_pelo_mei, FALSE) AND porte_empresa <> 'MEI'\n"
+        "WHERE exibir_razao_social\n",
+        "ORDER BY capital_social DESC\n",
+        "LIMIT 1000\n"
       ]
     }
   ],
@@ -110,23 +163,22 @@
     {
       "name": "visao_geral",
       "displayName": "Visão geral",
-      "pageType": "PAGE_TYPE_CANVAS",
       "layout": [
         {
           "widget": {
             "name": "titulo",
             "multilineTextboxSpec": {
               "lines": [
-                "# Dinâmica empresarial no Brasil — CNPJ / Receita Federal",
-                "Aberturas, fechamentos e mudanças cadastrais derivadas de snapshots mensais (SCD2 + log de eventos). Grão: empresa (CNPJ raiz). **Protótipo** — janela de teste; 2023-05 é carga inicial e não entra nos fluxos."
+                "# Dinâmica empresarial no Brasil — CNPJ / Receita Federal\n",
+                "Aberturas, fechamentos e mudanças cadastrais derivadas de snapshots mensais (SCD2 + log de eventos). Grão: empresa (matriz do CNPJ raiz). **Protótipo** — janela de teste; 2023-05 é carga inicial e não entra nos fluxos.\n"
               ]
             }
           },
           "position": {
             "x": 0,
             "y": 0,
-            "width": 6,
-            "height": 2
+            "width": 12,
+            "height": 3
           }
         },
         {
@@ -171,6 +223,32 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f_uf_situacao",
+                "query": {
+                  "datasetName": "situacao",
+                  "fields": [
+                    {
+                      "name": "uf",
+                      "expression": "`uf`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f_uf_taxas_uf",
+                "query": {
+                  "datasetName": "taxas_uf",
+                  "fields": [
+                    {
+                      "name": "uf",
+                      "expression": "`uf`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -192,6 +270,16 @@
                     "fieldName": "uf",
                     "displayName": "UF",
                     "queryName": "filtro_f_uf_eventos"
+                  },
+                  {
+                    "fieldName": "uf",
+                    "displayName": "UF",
+                    "queryName": "filtro_f_uf_situacao"
+                  },
+                  {
+                    "fieldName": "uf",
+                    "displayName": "UF",
+                    "queryName": "filtro_f_uf_taxas_uf"
                   }
                 ]
               },
@@ -203,8 +291,8 @@
           },
           "position": {
             "x": 0,
-            "y": 2,
-            "width": 2,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -250,6 +338,19 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f_porte_situacao",
+                "query": {
+                  "datasetName": "situacao",
+                  "fields": [
+                    {
+                      "name": "porte_empresa",
+                      "expression": "`porte_empresa`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -271,6 +372,11 @@
                     "fieldName": "porte_empresa",
                     "displayName": "Porte",
                     "queryName": "filtro_f_porte_eventos"
+                  },
+                  {
+                    "fieldName": "porte_empresa",
+                    "displayName": "Porte",
+                    "queryName": "filtro_f_porte_situacao"
                   }
                 ]
               },
@@ -281,9 +387,9 @@
             }
           },
           "position": {
-            "x": 2,
-            "y": 2,
-            "width": 2,
+            "x": 4,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -329,6 +435,19 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f_area_situacao",
+                "query": {
+                  "datasetName": "situacao",
+                  "fields": [
+                    {
+                      "name": "grande_area_cnae",
+                      "expression": "`grande_area_cnae`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -350,6 +469,11 @@
                     "fieldName": "grande_area_cnae",
                     "displayName": "Grande área (provisório)",
                     "queryName": "filtro_f_area_eventos"
+                  },
+                  {
+                    "fieldName": "grande_area_cnae",
+                    "displayName": "Grande área (provisório)",
+                    "queryName": "filtro_f_area_situacao"
                   }
                 ]
               },
@@ -360,9 +484,9 @@
             }
           },
           "position": {
-            "x": 4,
-            "y": 2,
-            "width": 2,
+            "x": 8,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -401,8 +525,8 @@
           },
           "position": {
             "x": 0,
-            "y": 3,
-            "width": 2,
+            "y": 4,
+            "width": 4,
             "height": 3
           }
         },
@@ -440,9 +564,9 @@
             }
           },
           "position": {
-            "x": 2,
-            "y": 3,
-            "width": 2,
+            "x": 4,
+            "y": 4,
+            "width": 4,
             "height": 3
           }
         },
@@ -480,9 +604,89 @@
             }
           },
           "position": {
-            "x": 4,
-            "y": 3,
-            "width": 2,
+            "x": 8,
+            "y": 4,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_reativacoes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "painel",
+                  "fields": [
+                    {
+                      "name": "sum(qtd_reativacoes)",
+                      "expression": "SUM(`qtd_reativacoes`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(qtd_reativacoes)",
+                  "displayName": "Reativações no período"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Reativações no período"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "c_saldo",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "painel",
+                  "fields": [
+                    {
+                      "name": "sum(crescimento_liquido)",
+                      "expression": "SUM(`crescimento_liquido`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(crescimento_liquido)",
+                  "displayName": "Saldo do período (entradas − saídas do estoque de ativas)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Saldo do período (entradas − saídas do estoque de ativas)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 7,
+            "width": 6,
             "height": 3
           }
         },
@@ -506,6 +710,10 @@
                     {
                       "name": "sum(qtd_baixas)",
                       "expression": "SUM(`qtd_baixas`)"
+                    },
+                    {
+                      "name": "sum(qtd_reativacoes)",
+                      "expression": "SUM(`qtd_reativacoes`)"
                     },
                     {
                       "name": "sum(qtd_inaptidoes)",
@@ -541,6 +749,10 @@
                       "displayName": "Baixas"
                     },
                     {
+                      "fieldName": "sum(qtd_reativacoes)",
+                      "displayName": "Reativações"
+                    },
+                    {
                       "fieldName": "sum(qtd_inaptidoes)",
                       "displayName": "Inaptidões"
                     }
@@ -549,14 +761,16 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Aberturas × baixas por mês"
+                "title": "Fluxos mensais: aberturas, baixas, reativações e inaptidões",
+                "showDescription": true,
+                "description": "Por mês de detecção no snapshot da Receita."
               }
             }
           },
           "position": {
             "x": 0,
-            "y": 6,
-            "width": 4,
+            "y": 10,
+            "width": 8,
             "height": 6
           }
         },
@@ -622,9 +836,9 @@
             }
           },
           "position": {
-            "x": 4,
-            "y": 6,
-            "width": 2,
+            "x": 8,
+            "y": 10,
+            "width": 4,
             "height": 6
           }
         },
@@ -635,15 +849,15 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "painel",
+                  "datasetName": "taxas_uf",
                   "fields": [
                     {
                       "name": "uf",
                       "expression": "`uf`"
                     },
                     {
-                      "name": "sum(crescimento_liquido)",
-                      "expression": "SUM(`crescimento_liquido`)"
+                      "name": "sum(taxa_crescimento_por_mil)",
+                      "expression": "SUM(`taxa_crescimento_por_mil`)"
                     }
                   ],
                   "disaggregated": false
@@ -655,11 +869,11 @@
               "widgetType": "bar",
               "encodings": {
                 "x": {
-                  "fieldName": "sum(crescimento_liquido)",
+                  "fieldName": "sum(taxa_crescimento_por_mil)",
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Saldo"
+                  "displayName": "Por mil ativas"
                 },
                 "y": {
                   "fieldName": "uf",
@@ -674,14 +888,16 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Saldo (aberturas − baixas) por UF"
+                "title": "Crescimento líquido por 1.000 ativas, por UF",
+                "showDescription": true,
+                "description": "(Entradas − saídas) ÷ ativas no início do mês, média do período. Só o filtro de UF reage."
               }
             }
           },
           "position": {
             "x": 0,
-            "y": 12,
-            "width": 3,
+            "y": 16,
+            "width": 6,
             "height": 8
           }
         },
@@ -733,14 +949,14 @@
                 "showTitle": true,
                 "title": "Taxa mensal de fechamento por 1.000 ativas — Brasil",
                 "showDescription": true,
-                "description": "Baixas ÷ ativas no início do mês. Não reage aos filtros."
+                "description": "Baixas de empresas ativas ÷ ativas no início do mês. Não reage aos filtros."
               }
             }
           },
           "position": {
-            "x": 3,
-            "y": 12,
-            "width": 3,
+            "x": 6,
+            "y": 16,
+            "width": 6,
             "height": 8
           }
         },
@@ -751,15 +967,15 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "eventos",
+                  "datasetName": "situacao",
                   "fields": [
                     {
                       "name": "monthly(data_referencia)",
                       "expression": "DATE_TRUNC(\"MONTH\", `data_referencia`)"
                     },
                     {
-                      "name": "sum(qtd_eventos)",
-                      "expression": "SUM(`qtd_eventos`)"
+                      "name": "sum(qtd_empresas)",
+                      "expression": "SUM(`qtd_empresas`)"
                     },
                     {
                       "name": "categoria_macro_evento",
@@ -782,11 +998,11 @@
                   "displayName": "Mês"
                 },
                 "y": {
-                  "fieldName": "sum(qtd_eventos)",
+                  "fieldName": "sum(qtd_empresas)",
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Eventos"
+                  "displayName": "Empresas"
                 },
                 "color": {
                   "fieldName": "categoria_macro_evento",
@@ -800,14 +1016,14 @@
                 "showTitle": true,
                 "title": "Mudanças de situação cadastral por categoria",
                 "showDescription": true,
-                "description": "Inclui abertura e fechamentos (categoria derivada do motivo da situação)."
+                "description": "Só matrizes; empresas distintas por mês de detecção. Não inclui abertura."
               }
             }
           },
           "position": {
             "x": 0,
-            "y": 20,
-            "width": 3,
+            "y": 24,
+            "width": 6,
             "height": 7
           }
         },
@@ -857,14 +1073,16 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Eventos por tipo no período"
+                "title": "Eventos por tipo no período",
+                "showDescription": true,
+                "description": "Todos os eventos do log (inclui filiais e sócios); abertura de empresa vem do painel."
               }
             }
           },
           "position": {
-            "x": 3,
-            "y": 20,
-            "width": 3,
+            "x": 6,
+            "y": 24,
+            "width": 6,
             "height": 7
           }
         },
@@ -939,8 +1157,8 @@
           },
           "position": {
             "x": 0,
-            "y": 27,
-            "width": 6,
+            "y": 31,
+            "width": 12,
             "height": 8
           }
         },
@@ -949,43 +1167,45 @@
             "name": "notas",
             "multilineTextboxSpec": {
               "lines": [
-                "### Notas de leitura",
-                "- **Empresa** = CNPJ raiz (8 dígitos); situação e endereço vêm da matriz.",
-                "- **Aberturas** e **baixas** vêm do log de eventos (diferença entre snapshots consecutivos).",
-                "- **Grande área** é um agrupamento provisório das seções CNAE (decisão D-10 em aberto).",
-                "- Sem nomes de sócios nem endereços (LGPD)."
+                "### Notas de leitura\n",
+                "- Os fluxos são por **mês de detecção** no snapshot da Receita (extraído por volta do dia 10): o mês M cobre, aproximadamente, de meados de M−1 a meados de M.\n",
+                "- **Empresa** = matriz do CNPJ raiz; eventos de filial não entram nos indicadores de empresa.\n",
+                "- **2023-05** é carga inicial (baseline): não há fluxo nesse mês.\n",
+                "- **Saldo** = entradas − saídas do estoque de ativas: inclui reativações, inaptidões e suspensões, não só aberturas e baixas.\n",
+                "- Grande área é um agrupamento provisório (D-10). Sem nomes de sócios nem endereços (LGPD).\n"
               ]
             }
           },
           "position": {
             "x": 0,
-            "y": 35,
-            "width": 6,
-            "height": 3
+            "y": 39,
+            "width": 12,
+            "height": 5
           }
         }
-      ]
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
     },
     {
       "name": "mercado_ativo",
       "displayName": "Mercado ativo",
-      "pageType": "PAGE_TYPE_CANVAS",
       "layout": [
         {
           "widget": {
             "name": "titulo_mercado",
             "multilineTextboxSpec": {
               "lines": [
-                "# Mercado ativo — concorrência local",
-                "Matrizes ativas na versão mais recente. Escolha UF, município e CNAE para ver o tamanho do mercado."
+                "# Mercado ativo — concorrência local\n",
+                "Matrizes ativas na versão mais recente. Escolha UF, município e CNAE para ver o tamanho do mercado.\n"
               ]
             }
           },
           "position": {
             "x": 0,
             "y": 0,
-            "width": 6,
-            "height": 2
+            "width": 12,
+            "height": 3
           }
         },
         {
@@ -996,6 +1216,19 @@
                 "name": "filtro_f2_uf_mercado",
                 "query": {
                   "datasetName": "mercado",
+                  "fields": [
+                    {
+                      "name": "uf",
+                      "expression": "`uf`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f2_uf_mercado_bairros",
+                "query": {
+                  "datasetName": "mercado_bairros",
                   "fields": [
                     {
                       "name": "uf",
@@ -1032,6 +1265,11 @@
                   {
                     "fieldName": "uf",
                     "displayName": "UF",
+                    "queryName": "filtro_f2_uf_mercado_bairros"
+                  },
+                  {
+                    "fieldName": "uf",
+                    "displayName": "UF",
                     "queryName": "filtro_f2_uf_mercado_empresas"
                   }
                 ]
@@ -1044,8 +1282,8 @@
           },
           "position": {
             "x": 0,
-            "y": 2,
-            "width": 2,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -1057,6 +1295,19 @@
                 "name": "filtro_f2_municipio_mercado",
                 "query": {
                   "datasetName": "mercado",
+                  "fields": [
+                    {
+                      "name": "municipio",
+                      "expression": "`municipio`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f2_municipio_mercado_bairros",
+                "query": {
+                  "datasetName": "mercado_bairros",
                   "fields": [
                     {
                       "name": "municipio",
@@ -1093,6 +1344,11 @@
                   {
                     "fieldName": "municipio",
                     "displayName": "Município",
+                    "queryName": "filtro_f2_municipio_mercado_bairros"
+                  },
+                  {
+                    "fieldName": "municipio",
+                    "displayName": "Município",
                     "queryName": "filtro_f2_municipio_mercado_empresas"
                   }
                 ]
@@ -1104,9 +1360,9 @@
             }
           },
           "position": {
-            "x": 2,
-            "y": 2,
-            "width": 2,
+            "x": 4,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -1165,9 +1421,9 @@
             }
           },
           "position": {
-            "x": 4,
-            "y": 2,
-            "width": 2,
+            "x": 8,
+            "y": 3,
+            "width": 4,
             "height": 1
           }
         },
@@ -1206,8 +1462,8 @@
           },
           "position": {
             "x": 0,
-            "y": 3,
-            "width": 2,
+            "y": 4,
+            "width": 4,
             "height": 4
           }
         },
@@ -1259,9 +1515,9 @@
             }
           },
           "position": {
-            "x": 2,
-            "y": 3,
-            "width": 4,
+            "x": 4,
+            "y": 4,
+            "width": 8,
             "height": 4
           }
         },
@@ -1272,7 +1528,7 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "mercado",
+                  "datasetName": "mercado_bairros",
                   "fields": [
                     {
                       "name": "bairro",
@@ -1311,14 +1567,16 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Ativas por bairro"
+                "title": "Ativas por bairro (20 maiores de cada município)",
+                "showDescription": true,
+                "description": "Escolha um município. O filtro de CNAE não reage neste gráfico."
               }
             }
           },
           "position": {
             "x": 0,
-            "y": 7,
-            "width": 3,
+            "y": 8,
+            "width": 6,
             "height": 8
           }
         },
@@ -1373,9 +1631,9 @@
             }
           },
           "position": {
-            "x": 3,
-            "y": 7,
-            "width": 3,
+            "x": 6,
+            "y": 8,
+            "width": 6,
             "height": 8
           }
         },
@@ -1466,20 +1724,22 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Empresas ativas (não MEI)",
+                "title": "Maiores empresas ativas (1.000 maiores por capital social)",
                 "showDescription": true,
-                "description": "MEI excluído (razão social com nome de pessoa física). Ordene por capital social."
+                "description": "Fora MEI, empresário individual e razão social com 11 dígitos seguidos (LGPD). Os filtros atuam sobre as 1.000 maiores do Brasil."
               }
             }
           },
           "position": {
             "x": 0,
-            "y": 15,
-            "width": 6,
+            "y": 16,
+            "width": 12,
             "height": 9
           }
         }
-      ]
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
     }
   ]
 }

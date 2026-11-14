@@ -637,8 +637,6 @@ resources:
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: gold_obt_dashboard_eventos
-        - task_key: sf_dim_tempo
         - task_key: sf_dq_dim_cnae
         - task_key: sf_dq_dim_empresa
         - task_key: sf_dq_ponte_cnae
@@ -741,6 +739,7 @@ resources:
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
+        - task_key: si_estabelecimentos
         - task_key: si_log_eventos_negocio
       - task_key: sf_dq_dim_cnae
         job_cluster_key: cluster_pipeline
@@ -815,6 +814,7 @@ resources:
         depends_on:
         - task_key: sf_dim_empresa
         - task_key: sf_dim_grupo_cnae
+        - task_key: si_estabelecimentos
       - task_key: sf_dq_fato_mudanca_estado
         job_cluster_key: cluster_pipeline
         spark_python_task:
@@ -828,11 +828,8 @@ resources:
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
-        - task_key: sf_dim_empresa
-        - task_key: sf_dim_grupo_cnae
-        - task_key: sf_dim_mudanca_estado
-        - task_key: sf_dim_tempo
         - task_key: sf_fato_mudanca_estado
+        - task_key: si_log_eventos_negocio
       - task_key: gold_dq_gold
         job_cluster_key: cluster_pipeline
         spark_python_task:
@@ -846,6 +843,9 @@ resources:
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
+        - task_key: gold_dashboard_mercado_ativo
         - task_key: gold_fato_empresa_mes
+        - task_key: gold_fato_indicadores_setoriais_mes
         - task_key: gold_obt_dashboard_eventos
+        - task_key: sf_dim_empresa
         - task_key: sf_fato_mudanca_estado
