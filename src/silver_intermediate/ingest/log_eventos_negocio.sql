@@ -172,23 +172,29 @@ ev_cnae_secundario AS (
 -- =====================================================================================================
 -- EMPRESA NASCEU: primeira aparição da MATRIZ CANÔNICA do CNPJ raiz (mesma regra da dim_empresa).
 -- =====================================================================================================
--- Matriz canônica: entre os estabelecimentos marcados como matriz, a ordem 0001; na falta dela, a menor
--- ordem (B19). Mantém todas as versões dessa matriz. Filtros copiados da CTE est_matriz da dim_empresa.
+-- Matriz canônica (mesma regra da CTE est_matriz da dim_empresa): em cada período, o estabelecimento marcado
+-- como matriz; havendo mais de um ao mesmo tempo, o de menor ordem (B19).
 matriz_canonica AS (
     SELECT
         cnpj_basico,
         pk,
         data_inicio_atividade,
         valid_since
-    FROM tcc_receita.silver_intermediate.estabelecimentos
-    WHERE identificador_matriz_filial = '1'
-      AND cnpj_basico IS NOT NULL
-      AND valid_since IS NOT NULL
-      AND valid_since < COALESCE(valid_until, '9999-12')
-    QUALIFY DENSE_RANK() OVER (
-        PARTITION BY cnpj_basico
-        ORDER BY CASE WHEN cnpj_ordem = '0001' THEN 0 ELSE 1 END, cnpj_ordem
-    ) = 1
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    -- A matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição de matriz),
+    -- e às vezes há mais de um marcado como matriz no mesmo período (B19). Regra da matriz canônica:
+    -- em cada período vale o estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo,
+    -- fica o de menor ordem (0001 primeiro). A versão de ordem maior que se sobrepõe é descartada inteira.
+    LEFT ANTI JOIN tcc_receita.silver_intermediate.estabelecimentos melhor
+        ON melhor.cnpj_basico = e.cnpj_basico
+       AND melhor.identificador_matriz_filial = '1'
+       AND melhor.cnpj_ordem < e.cnpj_ordem
+       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
+       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
+    WHERE e.identificador_matriz_filial = '1'
+      AND e.cnpj_basico IS NOT NULL
+      AND e.valid_since IS NOT NULL
+      AND e.valid_since < COALESCE(e.valid_until, '9999-12')
 ),
 -- Primeira versão da matriz canônica de cada CNPJ raiz (desempate por pk só por determinismo).
 primeira_versao_matriz AS (

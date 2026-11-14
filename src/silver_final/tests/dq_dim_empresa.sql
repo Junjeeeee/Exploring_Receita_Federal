@@ -33,18 +33,24 @@ sobreposicoes AS (
     WHERE prox_inicio IS NOT NULL AND fim_calc > prox_inicio
 ),
 -- Cobertura (C-02): a dimensão deve cobrir exatamente os meses da matriz canônica.
--- Mesma regra de matriz canônica do ingest: ordem 0001; na falta dela, a menor ordem.
+-- Mesma regra de matriz canônica do ingest: matriz vigente em cada período; em caso de empate, a menor ordem.
 matriz_canonica AS (
     SELECT cnpj_basico, valid_since, COALESCE(valid_until, '9999-12') AS valid_until
-    FROM tcc_receita.silver_intermediate.estabelecimentos
-    WHERE identificador_matriz_filial = '1'
-      AND cnpj_basico IS NOT NULL
-      AND valid_since IS NOT NULL
-      AND valid_since < COALESCE(valid_until, '9999-12')
-    QUALIFY DENSE_RANK() OVER (
-        PARTITION BY cnpj_basico
-        ORDER BY CASE WHEN cnpj_ordem = '0001' THEN 0 ELSE 1 END, cnpj_ordem
-    ) = 1
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    -- A matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição de matriz),
+    -- e às vezes há mais de um marcado como matriz no mesmo período (B19). Regra da matriz canônica:
+    -- em cada período vale o estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo,
+    -- fica o de menor ordem (0001 primeiro). A versão de ordem maior que se sobrepõe é descartada inteira.
+    LEFT ANTI JOIN tcc_receita.silver_intermediate.estabelecimentos melhor
+        ON melhor.cnpj_basico = e.cnpj_basico
+       AND melhor.identificador_matriz_filial = '1'
+       AND melhor.cnpj_ordem < e.cnpj_ordem
+       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
+       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
+    WHERE e.identificador_matriz_filial = '1'
+      AND e.cnpj_basico IS NOT NULL
+      AND e.valid_since IS NOT NULL
+      AND e.valid_since < COALESCE(e.valid_until, '9999-12')
 ),
 -- Meses de um intervalo [a, b) = (ano_b*12 + mes_b) - (ano_a*12 + mes_a). '9999-12' = aberto; como os dois
 -- lados usam o mesmo teto, a comparação continua exata.
