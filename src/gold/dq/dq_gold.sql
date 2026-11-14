@@ -62,7 +62,12 @@ metricas_mes AS (
         COUNT_IF(f.ativa_inicio_mes OR f.teve_abertura_mes OR f.teve_reativacao_mes OR f.entrou_estoque_mes
                  OR f.saiu_estoque_mes OR f.teve_baixa_mes OR f.teve_falencia_mes OR f.teve_inaptidao_mes
                  OR f.teve_suspensao_mes) AS linhas_com_fluxo,
-        COUNT_IF(NOT COALESCE(f.uf RLIKE '^[A-Z]{2}$', FALSE)) AS uf_invalida
+        COUNT_IF(NOT COALESCE(f.uf RLIKE '^[A-Z]{2}$', FALSE)) AS uf_invalida,
+        -- Idade na baixa (dashboard v2): faixa só em baixa, idade nunca negativa, "sem data" medida.
+        COUNT_IF(f.teve_baixa_mes) AS baixas,
+        COUNT_IF((f.faixa_idade_baixa IS NOT NULL) <> f.teve_baixa_mes) AS faixa_idade_incoerente,
+        COUNT_IF(f.idade_na_baixa_meses < 0) AS idade_negativa,
+        COUNT_IF(f.faixa_idade_baixa = 'sem data') AS baixas_sem_data
     FROM tcc_receita.gold.fato_empresa_mes f
     CROSS JOIN params p
     WHERE f.mes_referencia >= p.mes_anterior_janela AND f.mes_referencia <= p.mes_fim
@@ -115,6 +120,10 @@ resumo AS (
         COALESCE(SUM(CASE WHEN eh_baseline THEN linhas_com_fluxo ELSE 0 END), 0) AS linhas_com_fluxo_no_baseline,
         -- (7) UF com 2 letras (o rótulo de desconhecido NI também tem 2 letras).
         COALESCE(SUM(uf_invalida), 0) AS uf_invalida,
+        COALESCE(SUM(faixa_idade_incoerente), 0) AS faixa_idade_incoerente,
+        COALESCE(SUM(idade_negativa), 0) AS idade_negativa,
+        COALESCE(SUM(baixas), 0) AS baixas,
+        COALESCE(SUM(baixas_sem_data), 0) AS baixas_sem_data,
         -- Critério de aceite da spec: aberturas = matrizes cuja primeira aparição é naquele mês.
         COUNT_IF(aberturas <> aberturas_esperadas) AS meses_aberturas_divergentes,
         MIN(CASE WHEN aberturas <> aberturas_esperadas
@@ -156,7 +165,16 @@ SELECT
         CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.uf_invalida AS STRING), ' linhas com UF fora do padrao de 2 letras.')),
     ASSERT_TRUE(r.meses_aberturas_divergentes = 0,
         CONCAT('ERRO DQ [fato_empresa_mes]: aberturas diferem das primeiras aparicoes da dim_empresa em ',
-               CAST(r.meses_aberturas_divergentes AS STRING), ' mes(es); ex.: ', COALESCE(r.exemplo_aberturas, '?')))
+               CAST(r.meses_aberturas_divergentes AS STRING), ' mes(es); ex.: ', COALESCE(r.exemplo_aberturas, '?'))),
+    ASSERT_TRUE(r.faixa_idade_incoerente = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.faixa_idade_incoerente AS STRING),
+               ' linhas com faixa_idade_baixa preenchida sem baixa (ou baixa sem faixa).')),
+    ASSERT_TRUE(r.idade_negativa = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.idade_negativa AS STRING), ' baixas com idade negativa.')),
+    -- Limiar [padrão] de 5%: acima disso a mediana e as faixas de idade deixam de representar as baixas.
+    ASSERT_TRUE(r.baixas_sem_data <= 0.05 * r.baixas,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.baixas_sem_data AS STRING), ' de ', CAST(r.baixas AS STRING),
+               ' baixas sem idade (data de inicio ou da baixa ausente, ou baixa antes do inicio); limite 5%.'))
 FROM resumo r
 CROSS JOIN duplicados d;
 

@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS tcc_receita.gold.fato_empresa_mes (
     teve_reativacao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar ATIVA e está ATIVA em M.',
     entrou_estoque_mes BOOLEAN COMMENT 'NOT ativa_inicio_mes AND ativa_fim_mes (abertura ou reativação). FALSE no baseline.',
     saiu_estoque_mes BOOLEAN COMMENT 'ativa_inicio_mes AND NOT ativa_fim_mes (baixa, inaptidão, suspensão, nulidade...).',
-    teve_suspensao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar SUSPENSA e está SUSPENSA em M.'
+    teve_suspensao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar SUSPENSA e está SUSPENSA em M.',
+    idade_na_baixa_meses INT COMMENT 'Só quando teve_baixa_mes: meses completos entre data_inicio_atividade e a data real da baixa (data_situacao_cadastral). NULL se falta data ou se a baixa é anterior ao início.',
+    faixa_idade_baixa STRING COMMENT 'Só quando teve_baixa_mes: 00-01 ano, 01-02 anos, 02-05 anos, 05-10 anos, 10+ anos ou sem data (idade NULL). NULL quando não houve baixa.'
 )
 USING DELTA
 PARTITIONED BY (mes_referencia)
@@ -114,7 +116,8 @@ versoes_janela AS (
         COALESCE(e.situacao_cadastral_matriz, 'NAO IDENTIFICADO') AS situacao_cadastral,
         -- Código normalizado com 2 dígitos ('5' e '05' são o mesmo motivo).
         LPAD(TRIM(e.codigo_motivo_situacao_cadastral), 2, '0') AS codigo_motivo,
-        e.data_inicio_atividade
+        e.data_inicio_atividade,
+        e.data_situacao_cadastral
     FROM tcc_receita.silver_final.dim_empresa e
     CROSS JOIN params p
     WHERE e.sk_empresa != -1
@@ -218,6 +221,20 @@ fluxos_mes AS (
         (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'INAPTA'   AND e.situacao_cadastral = 'INAPTA')   AS teve_inaptidao_mes,
         (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'SUSPENSA' AND e.situacao_cadastral = 'SUSPENSA') AS teve_suspensao_mes
     FROM estoque_mes e
+),
+idade_baixa AS (
+    -- Idade na baixa = data real da baixa − início de atividade (relógio da data do evento, não do mês de
+    -- detecção). Na versão BAIXADA da matriz, data_situacao_cadastral é a data da baixa declarada pela Receita.
+    -- Data ausente ou baixa antes do início → NULL (vira a faixa 'sem data', medida no DQ).
+    SELECT
+        f.*,
+        CASE
+            WHEN f.teve_baixa_mes
+             AND f.data_inicio_atividade IS NOT NULL
+             AND f.data_situacao_cadastral >= f.data_inicio_atividade
+            THEN CAST(FLOOR(MONTHS_BETWEEN(f.data_situacao_cadastral, f.data_inicio_atividade)) AS INT)
+        END AS idade_na_baixa_meses
+    FROM fluxos_mes f
 )
 SELECT
     f.mes_referencia,
@@ -260,8 +277,19 @@ SELECT
     f.teve_reativacao_mes,
     f.entrou_estoque_mes,
     f.saiu_estoque_mes,
-    f.teve_suspensao_mes
-FROM fluxos_mes f
+    f.teve_suspensao_mes,
+    f.idade_na_baixa_meses,
+    -- Faixas com dois dígitos: a ordem alfabética já é a ordem de idade.
+    CASE
+        WHEN NOT f.teve_baixa_mes THEN NULL
+        WHEN f.idade_na_baixa_meses IS NULL THEN 'sem data'
+        WHEN f.idade_na_baixa_meses < 12 THEN '00-01 ano'
+        WHEN f.idade_na_baixa_meses < 24 THEN '01-02 anos'
+        WHEN f.idade_na_baixa_meses < 60 THEN '02-05 anos'
+        WHEN f.idade_na_baixa_meses < 120 THEN '05-10 anos'
+        ELSE '10+ anos'
+    END AS faixa_idade_baixa
+FROM idade_baixa f
 -- Filtro DEPOIS das flags: empresas fora do estoque e sem mudança (ex.: baixadas há anos) não geram linha.
 WHERE f.ativa_inicio_mes
    OR f.ativa_fim_mes
