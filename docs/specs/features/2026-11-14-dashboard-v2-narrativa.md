@@ -1,0 +1,167 @@
+# Feature: dashboard v2 — narrativa em 6 páginas
+
+**Status:** em implementação · 2026-11-14 (plano aprovado pelo autor em 2026-11-14; detalhes de widget delegados)
+**Camadas afetadas:** gold (`fato_empresa_mes`, `dq_gold.sql`), dashboard (`src/gold/dashboard/`)
+**Branch:** `worktree-dashboard-segunda`
+**Substitui:** o layout de [`dashboard-v0.md`](dashboard-v0.md) (datasets e regras de LGPD continuam valendo).
+**Contrato de colunas da gold:** [`2026-11-14-semantica-eventos-e-fluxos.md`](2026-11-14-semantica-eventos-e-fluxos.md) § 2.4.
+
+## 1. Requisito
+
+- Problema: lendo o v0, "não se pega nenhuma informação relevante": contadores com totais do período sem
+  comparação, uma página com 14 gráficos de mesmo peso, títulos que descrevem o gráfico e não o achado.
+- Quem consome: banca e orientadora do TCC. A página "Mercado ativo" (aplicação prática) fica no fim.
+- Pergunta por página; big numbers no topo; títulos em forma de pergunta ou achado estável (sem número no
+  título: o número muda com filtro e com a base); 1–2 linhas de texto no topo dizendo a pergunta e como ler.
+- Fora de escopo: mapa (não há confirmação de que o Lakeview desenhe UFs brasileiras de forma confiável),
+  taxas que reajam a filtro de porte/área nos rankings (ver 2.3), período maior que a janela atual.
+
+## 2. Design
+
+### 2.1 Restrições do Lakeview que guiam o desenho
+
+| Restrição | Consequência |
+|---|---|
+| Caixa de texto não mostra número calculado | a história vai em contadores e títulos; texto fixo só explica como ler |
+| Comparação nativa do contador (Value × Comparison) não tem sintaxe JSON documentada | **não usada**: a variação vem como contador próprio "Δ vs. mês anterior" = `SUM` de uma coluna `valor(M) − valor(M−1)` (linear, então respeita qualquer filtro) |
+| Filtro de campo filtra linhas do dataset antes da agregação do widget | contador de "último mês" = `SUM` de coluna que só vale no último mês (0 nos outros) |
+| Proporção não é soma: `SUM(a)/SUM(b)` no widget não tem sintaxe confirmada em JSON exportado | percentuais = `AVG` de um indicador 0/100 em dataset **uma linha por empresa** (AVG é agregação comum e respeita filtros); única exceção é "aberturas por baixa" (ver risco) |
+| Mediana | `PERCENTILE(col, 0.5)` (visto em dashboard exportado pela própria Databricks) sobre dataset uma linha por baixa |
+| Taxa por 1.000 ativas por grupo | precisa de razão de somas → vem pronta do dataset (Brasil por grupo); por isso só reage aos filtros que existem no dataset |
+
+### 2.2 Gold: idade na baixa (`fato_empresa_mes`)
+
+Colunas novas no fim de `gold.fato_empresa_mes` (incremental; já está no `DROP` de
+`src/jobs/migracoes/2026-11-14_semantica_eventos.sql`, que ainda não foi rodado na base real → sem migração extra):
+
+| Coluna | Regra |
+|---|---|
+| `idade_na_baixa_meses INT` | só quando `teve_baixa_mes`: meses completos entre `data_inicio_atividade` e `data_situacao_cadastral` (data real da baixa, versão BAIXADA da matriz). NULL se alguma data falta ou se a baixa é anterior ao início |
+| `faixa_idade_baixa STRING` | NULL se não é baixa; `00-01 ano`, `01-02 anos`, `02-05 anos`, `05-10 anos`, `10+ anos`; `sem data` quando a idade é NULL (não some em silêncio) |
+
+Por que no fato e não na consulta do dashboard nem em tabela `CREATE OR REPLACE`: as duas datas já são lidas
+da `dim_empresa` dentro de `fato_empresa_mes`; calcular no dataset exigiria juntar a `dim_empresa` inteira a
+cada refresh, e uma tabela nova exigiria arquivo, task e DQ novos. Rótulos com dois dígitos ordenam certo em
+ordem alfabética (o gráfico não depende de ordenação customizada).
+
+DQ (`dq_gold.sql`, bloco 2): `faixa_idade_baixa` não nula ⇔ `teve_baixa_mes`; `idade_na_baixa_meses` ≥ 0;
+`sem data` ≤ 5% das baixas da janela (limiar **[padrão]**; o número observado vai para as notas).
+
+### 2.3 Datasets do dashboard
+
+Mantidos do v0: `painel`, `taxas_setor` (+ `taxa_saldo_por_mil`), `taxas_uf` (+ abertura/fechamento e piso),
+`eventos`, `top_cnaes`, `macro`, `mercado`, `mercado_bairros`, `mercado_empresas`.
+Removidos: `estoque` (substituído por `resumo_mes`) e `situacao` (ver 2.5).
+
+| Dataset novo | Fonte | Grão | Para quê |
+|---|---|---|---|
+| `resumo_mes` | `fato_indicadores_setoriais_mes` | UF × porte × área | contadores do último mês e Δ vs. mês anterior (colunas `*_ultimo_mes`, `*_delta`) |
+| `ultimo_mes` | idem | 1 linha | tabela com o mês de referência dos contadores e o anterior |
+| `estoque_mes` | idem | mês × UF × porte × área | série do estoque de ativas (inclui o baseline) |
+| `fluxos_empresa` | `fato_empresa_mes` | 1 linha por empresa × mês com abertura ou baixa (sem baseline) | % MEI, % falência, idade mediana, % < 2 anos, composição por porte |
+| `baixas_idade` | `fato_empresa_mes` | mês × UF × porte × área × faixa | baixas por faixa de idade |
+| `baixas_motivo` | `obt_dashboard_eventos` | mês × UF × porte × área × categoria | baixas de matriz por categoria de motivo (empresas distintas) |
+| `extremos_setor` / `extremos_uf` | `fato_indicadores_setoriais_mes` | 2 linhas | "mais cresce" e "mais encolhe" (taxa de saldo por 1.000 ativas, com piso de volume) |
+
+Piso de volume dos rankings **[padrão]**: média mensal de ativas no início do mês ≥ 100 (na base real todas
+as UFs e áreas passam; na amostra de 1% o piso tira ruído de UFs pequenas). UF `NI` fica fora dos rankings.
+
+### 2.4 Páginas
+
+Grade de 12 colunas. "Filtros" = filtros de campo da página e os datasets que eles alcançam.
+
+**1. Resumo — O estoque de empresas está crescendo?** Filtros: UF, porte, grande área → `resumo_mes`, `estoque_mes`, `painel`.
+
+| Widget | Tipo | Dataset · campo | Título |
+|---|---|---|---|
+| `t_mes` | tabela | `ultimo_mes` | Mês dos contadores |
+| `c_ativas` / `c_ativas_d` | contador | `resumo_mes` · `SUM(ativas_ultimo_mes)` / `SUM(ativas_delta)` | Empresas ativas no fim do último mês / Δ vs. mês anterior |
+| `c_aberturas` / `_d` | contador | `aberturas_ultimo_mes` / `aberturas_delta` | Aberturas no último mês / Δ |
+| `c_baixas` / `_d` | contador | `baixas_ultimo_mes` / `baixas_delta` | Baixas no último mês / Δ |
+| `c_saldo` / `_d` | contador | `saldo_ultimo_mes` / `saldo_delta` | Saldo do estoque no último mês / Δ |
+| `c_ab_por_baixa` | contador | `try_divide(SUM(aberturas_ultimo_mes), SUM(baixas_ultimo_mes))` | Aberturas por baixa no último mês |
+| `l_estoque` | linha | `estoque_mes` · `SUM(estoque_final_ativas)` | O estoque de empresas ativas cresce mês a mês? |
+| `l_entradas_saidas` | linha | `painel` · entradas, saídas, aberturas, baixas | Entram mais empresas no estoque do que saem? |
+
+**2. Quem — Quem abre e quem fecha?** Filtros: UF, grande área → `fluxos_empresa`, `painel` (porte é o assunto da página).
+
+| Widget | Tipo | Dataset · campo | Título |
+|---|---|---|---|
+| `c_mei_ab` / `c_mei_bx` | contador | `fluxos_empresa` · `AVG(pct_mei_abertura)` / `AVG(pct_mei_baixa)` | % das aberturas que são MEI / % das baixas que são MEI |
+| `t_setor_extremos` | tabela | `extremos_setor` | Setor que mais cresce e que mais encolhe (Brasil) |
+| `b_porte` | barras empilhadas | `fluxos_empresa` · x = fluxo, y = `SUM(qtd)`, cor = porte | O MEI domina tanto as aberturas quanto as baixas? |
+| `b_saldo_area` | barras | `taxas_setor` · `taxa_saldo_por_mil` | Quais setores crescem mais, em proporção ao seu tamanho? |
+| `b_taxa_area` | barras | `taxas_setor` · `taxa_fechamento_por_mil` | Em quais setores as empresas fecham mais? |
+| `t_cnaes` | tabela | `top_cnaes` | Quais atividades concentram as aberturas? |
+
+**3. Onde — Onde cresce mais?** Sem filtros (taxas prontas por UF, Brasil).
+
+| Widget | Tipo | Dataset · campo | Título |
+|---|---|---|---|
+| `t_uf_extremos` | tabela | `extremos_uf` | UF com maior e com menor crescimento líquido |
+| `b_saldo_uf` | barras | `taxas_uf` · `taxa_crescimento_por_mil` | Onde o estoque cresce mais, em proporção ao seu tamanho? |
+| `t_uf` | tabela | `taxas_uf` | Taxas por UF: abertura, fechamento e saldo por 1.000 ativas |
+
+**4. Como fecha — Por que e com que idade as empresas fecham?** Filtros: UF, porte, grande área →
+`fluxos_empresa`, `baixas_idade`, `baixas_motivo`, `painel`, `eventos`.
+
+| Widget | Tipo | Dataset · campo | Título |
+|---|---|---|---|
+| `c_falencia` | contador | `fluxos_empresa` · `AVG(pct_falencia_baixa)` | % das baixas por falência ou liquidação judicial |
+| `c_idade_mediana` | contador | `PERCENTILE(idade_baixa_anos, 0.5)` | Idade mediana na baixa (anos) |
+| `c_menos_2` | contador | `AVG(pct_baixa_menos_2_anos)` | % das baixas com menos de 2 anos de vida |
+| `c_reativacoes` | contador | `painel` · `SUM(qtd_reativacoes)` | Reativações no período |
+| `b_motivo` | barras | `baixas_motivo` · `SUM(qtd_empresas)` por categoria | Falência é rara: por que as empresas são baixadas? |
+| `b_idade` | barras | `baixas_idade` · `SUM(qtd_baixas)` por faixa | Com que idade as empresas fecham? |
+| `l_saidas` | linha | `painel` · baixas, inaptidões, suspensões, reativações | Além da baixa: inaptidão, suspensão e reativação mês a mês |
+| `b_tipo` | barras | `eventos` · `SUM(qtd_eventos)` por tipo | O que mais muda no cadastro além da situação? |
+
+**5. Mercado ativo — Quem são meus concorrentes locais?** Igual ao v0 (só texto de abertura em forma de pergunta).
+
+**6. Sobre os dados — Como ler estes números?** Texto fixo: mês de detecção × data real do evento; empresa =
+matriz; categorias por código de motivo; limites (3 meses de fluxo, jun–ago/2023; 2023-05 é baseline); taxas e
+piso; o que reage a filtro. `l_macro` (Selic e IPCA) mora aqui como contexto: com 3 meses de fluxo não sustenta
+leitura de causa.
+
+### 2.5 Redistribuição dos widgets do v0
+
+| v0 | v2 |
+|---|---|
+| `c_ativas`, `c_aberturas`, `c_baixas`, `c_saldo` (período) | p1, último mês + Δ |
+| `c_reativacoes` | p4 |
+| `l_fluxos` | p1 (`l_entradas_saidas`) e p4 (`l_saidas`) |
+| `l_macro` | p6 |
+| `b_saldo_uf` | p3 (com piso) |
+| `b_taxa_area` | p2 |
+| `b_tipo` | p4 (último widget) |
+| `b_situacao` | **removido**: suas categorias aparecem em `b_motivo` (baixas) e `l_saidas` (inaptidão, suspensão, reativação); mantê-lo repetiria os mesmos números com outro corte |
+| `t_cnaes` | p2 |
+| página Mercado ativo | p5 sem mudança |
+
+### 2.6 LGPD e TCC
+
+Nenhuma coluna pessoal nova; `exibir_razao_social` continua controlando a lista de empresas; `fluxos_empresa`
+não expõe CNPJ nem nome (só UF, porte, área e indicadores). Impacto no TCC: os prints do capítulo de
+Resultados passam a seguir as 6 perguntas; "idade na baixa" é definição nova a descrever na Metodologia
+(ver `docs/tcc.md`).
+
+## 3. Tarefas
+
+- [ ] T1 `fato_empresa_mes.sql`: `idade_na_baixa_meses`, `faixa_idade_baixa`; DQ em `dq_gold.sql`
+- [ ] T2 `gerar_dashboard.py`: 6 páginas, datasets novos, `validar()` ampliado (todas as páginas com texto de abertura; contadores só com agregação); JSON regenerado; README
+- [ ] T3 Amostra: `fato_empresa_mes` + painel + DQ gold; cada dataset do dashboard executado (sem erro, linhas > 0); filtros simulados nos contadores; identidade de estoque
+- [ ] T4 Atualizar a prévia (`01f1e03111521e8fa0a9cf1aa4f96e4e`) e ler de volta pela API
+- [ ] T5 Backlog (Alvo atual), `dashboard-v0.md` apontando para esta spec
+
+## 4. Critérios de aceite
+
+- [ ] DQ gold passa na amostra (incluindo os novos de idade na baixa).
+- [ ] Todos os datasets executam na amostra com linhas > 0.
+- [ ] Contadores do resumo: `ativas_fim(M) = ativas_fim(M−1) + saldo(M)`; % MEI das baixas perto de 70% (amostra).
+- [ ] Filtro de UF e de porte nos datasets dos contadores devolve subconjunto coerente (soma das UFs = Brasil).
+- [ ] Prévia atualizada com 6 páginas; `validar()` sem erro.
+- [ ] Renderização conferida no workspace (pelo autor: não há login de navegador no ambiente do agente).
+
+## 5. Notas de execução
+
+(preencher)
