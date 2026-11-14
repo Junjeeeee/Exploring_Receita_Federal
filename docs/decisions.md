@@ -29,7 +29,7 @@ Requer snapshot completo do mês anterior à janela; snapshot parcial gera saíd
 
 ## D-07 — LGPD
 Nenhum CPF em claro; documentos mantidos como fornecidos (parcialmente mascarados), nunca desmascarados.
-Mascaramento do nome MEI na landing é preservado (validado em dados reais).
+Mascaramento do nome MEI na landing é preservado (validado em dados reais). Condição ampliada em D-16.
 
 ## D-08 — Reprocessamento (revista em 2026-11-08)
 Produção: reprocessar janela preserva versões passadas e futuras (`MERGE`, `REPLACE WHERE`).
@@ -59,3 +59,15 @@ para o TCC e para a declaração de uso de IA).
 **Motivo:** velocidade sem perder rastreabilidade.
 **Consequências:** escrever spec retroativa ao sair do protótipo — pendentes: `job-databricks` (runners +
 Job YAML) e `carga-inicial` (B9).
+
+## D-16 — Máscara de CPF para todo empresário individual
+2026-11-14 · aceita (autor, backlog D-a)
+**Contexto:** a máscara só valia para `porte = '01' AND natureza = '2135'`; 2.816 razões de natureza 2135 com
+porte 03/05 tinham CPF em claro (base real, 4 meses), e ~370 em outras naturezas tinham 11 dígitos seguidos.
+**Decisão:** mascarar toda natureza 2135, qualquer porte. Regex e formato de saída inalterados. Outras
+naturezas não são mascaradas.
+**Alternativas:** mascarar 11 dígitos em qualquer natureza (altera nomes de PJ sem evidência de CPF);
+manter a condição antiga (viola LGPD).
+**Motivo:** empresário individual é pessoa física — o número é CPF; em PJ o número pode ser legítimo.
+**Consequências:** vale só para extrações novas; reextrair `empresas` está pendente (sem autorização ainda).
+Medir as ~370 após a reextração. Spec: `specs/features/2026-11-14-mascara-cpf-empresario-individual.md`.

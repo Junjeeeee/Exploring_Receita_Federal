@@ -32,7 +32,6 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 
 | ID | Pergunta | Padrão adotado enquanto isso |
 |---|---|---|
-| D-a | **LGPD:** 2.816 razões sociais com 11 dígitos seguidos fora da condição da máscara (natureza 2135 com porte 03/05: 2.816; mais ~370 em outras naturezas, que podem não ser CPF). A condição `porte = '01'` é estreita. Ampliar para toda natureza 2135? Exige reextrair `empresas` na landing | landing intocada; gold marca `exibir_razao_social = FALSE` |
 | D-b | Baixa de filial conta para a empresa? | não (D-14): empresa = matriz |
 | D-c | Lista de "falência" por código | {05, 06, 10} (D-15) |
 | D-d | Reativação (INAPTA → ATIVA, ~37 mil/mês) entra como fluxo próprio no dashboard? | sim |
@@ -43,6 +42,8 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 
 | ID | O que | Onde | Estado |
 |---|---|---|---|
+| D-a | **LGPD:** máscara de CPF da landing ampliada para toda natureza 2135 (antes só porte 01; 2.816 razões de porte 03/05 em claro). **Código pronto, falta reextrair `empresas` na landing** e reprocessar a cadeia; até lá os dados já extraídos seguem com as 2.816 razões em claro e a gold continua escondendo via `exibir_razao_social = FALSE` | [`specs/features/2026-11-14-mascara-cpf-empresario-individual.md`](specs/features/2026-11-14-mascara-cpf-empresario-individual.md), D-16 | 🔧 |
+| D-a′ | ~370 razões com 11 dígitos seguidos em **outras** naturezas: não mascaradas (podem ser números legítimos de PJ). Medir após a reextração (por natureza + dígito verificador de CPF) e decidir | mesma spec | ⬜ medir |
 | C-05 | `socios.sql` não idempotente (versão inativa fantasma ao reexecutar). Tabela atual **não** está contaminada (medido: 0) | critica §4.2, T5 | 🧪 |
 | C-06 | `socios.sql`: bronze vazia fecha todos os vínculos (assert dentro de `GROUP BY`) | critica §4.2, T5 | 🧪 |
 | C-01 | Sobrevivência: morte pela data real, censura no último snapshot | spec §2.4, T4 | 🧪 |

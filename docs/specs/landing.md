@@ -4,7 +4,11 @@
 
 ## Responsabilidade
 Baixar fontes brutas e gravar **Parquet tipado como string** no S3, uma partição por mês para tabelas mensais.
-Sem regra de negócio, exceto o **mascaramento de CPF de MEI** (LGPD).
+Sem regra de negócio, exceto o **mascaramento de CPF na razão social de empresário individual** (LGPD):
+`limpar_chunk_empresas_mei` aplica a máscara a toda linha com `natureza_juridica = 2135`, qualquer porte
+(comparação numérica, robusta a string/int). Outras naturezas não são tocadas. Até 2026-11-14 a condição era
+`porte = '01' AND natureza = '2135'`; os Parquets extraídos antes disso ainda têm CPF em claro em empresário
+individual de porte 03/05 até a reextração de `empresas` (D-16, backlog D-a).
 
 ## Entradas / saídas
 - Entrada: Receita (ZIP via WebDAV), IBGE API, BigQuery (CEPs).
@@ -17,7 +21,7 @@ Sem regra de negócio, exceto o **mascaramento de CPF de MEI** (LGPD).
 
 | Tabela | pasta_s3 | Origem | Mensal | min_linhas | Observação |
 |---|---|---|---|---|---|
-| empresas | empresa | RFB_ZIP `Empresas` | ✔ | 40M | `capital_social` float; mascaramento MEI |
+| empresas | empresa | RFB_ZIP `Empresas` | ✔ | 40M | `capital_social` float; máscara de CPF (natureza 2135) |
 | estabelecimentos | estabele | RFB_ZIP `Estabelecimentos` | ✔ | 45M | 30 colunas |
 | dados_simples | simples | RFB_ZIP `Simples` | ✔ | 30M | |
 | socios | socio | RFB_ZIP `Socios` | ✔ | 20M | |
