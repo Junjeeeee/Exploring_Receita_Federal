@@ -1,5 +1,8 @@
+-- DQ fato_mudanca_estado.
+-- As FKs são COALESCE(..., -1) e o -1 existe nas dimensões, então "FK nula/órfã" não pode falhar.
+-- O que detecta falha real é a PROPORÇÃO de linhas que caíram em -1 (resolução que não funcionou).
 WITH params AS (
-    SELECT 
+    SELECT
         COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM')) AS mes_ini,
         COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -1), 'yyyy-MM')) AS mes_fim
 ),
@@ -10,59 +13,51 @@ fato_janela AS (
     WHERE f.mes_referencia >= p.mes_ini AND f.mes_referencia <= p.mes_fim
 ),
 metricas AS (
-    SELECT 
+    SELECT
         COUNT(*) AS total_linhas,
-        SUM(CASE WHEN sk_mudanca_estado IS NULL 
-                   OR sk_empresa_anterior IS NULL 
-                   OR sk_empresa_posterior IS NULL 
-                   OR sk_grupo_cnae_anterior IS NULL 
-                   OR sk_grupo_cnae_posterior IS NULL 
-                   OR sk_tempo IS NULL THEN 1 ELSE 0 END) AS fks_nulas
+        SUM(CASE WHEN sk_mudanca_estado = -1 THEN 1 ELSE 0 END) AS qtd_sem_mudanca,
+        SUM(CASE WHEN sk_tempo = -1 THEN 1 ELSE 0 END) AS qtd_sem_tempo,
+        SUM(CASE WHEN cnpj_raiz IS NULL THEN 1 ELSE 0 END) AS qtd_sem_cnpj,
+        SUM(CASE WHEN sk_empresa_posterior = -1 THEN 1 ELSE 0 END) AS qtd_sem_empresa_post,
+        -- grão: um evento do log = (pk, mês, assinatura via sk, data, matriz); não pode repetir por pareamento de versões
+        COUNT(DISTINCT CONCAT_WS('|', pk_entidade_origem, mes_referencia, CAST(sk_mudanca_estado AS STRING),
+                                 COALESCE(CAST(data_evento AS STRING), ''), COALESCE(CAST(eh_matriz AS STRING), ''))) AS qtd_eventos_distintos
     FROM fato_janela
 ),
-orfaos_emp_post AS (
+-- Reconciliação: mesma regra de distinção do fato (normalizações + DISTINCT + pk não nula).
+log_distinto AS (
     SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_empresa d ON f.sk_empresa_posterior = d.sk_empresa
-),
-orfaos_emp_ant AS (
-    SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_empresa d ON f.sk_empresa_anterior = d.sk_empresa
-),
-orfaos_cnae_post AS (
-    SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_grupo_cnae d ON f.sk_grupo_cnae_posterior = d.sk_grupo_cnae
-),
-orfaos_cnae_ant AS (
-    SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_grupo_cnae d ON f.sk_grupo_cnae_anterior = d.sk_grupo_cnae
-),
-orfaos_mudanca AS (
-    SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_mudanca_estado d ON f.sk_mudanca_estado = d.sk_mudanca_estado
-),
-orfaos_tempo AS (
-    SELECT COUNT(*) AS qtd
-    FROM fato_janela f
-    LEFT ANTI JOIN tcc_receita.silver_final.dim_tempo d ON f.sk_tempo = d.sk_tempo
+    FROM (
+        SELECT DISTINCT
+            l.pk,
+            COALESCE(NULLIF(UPPER(TRIM(l.entidade_tipo)), ''), 'ENTIDADE_DESCONHECIDA') AS entidade_tipo,
+            COALESCE(NULLIF(TRIM(l.evento), ''), 'EVENTO_DESCONHECIDO') AS evento,
+            COALESCE(NULLIF(TRIM(l.valor_antigo), ''), 'NULO') AS valor_anterior,
+            COALESCE(NULLIF(TRIM(l.valor_novo), ''), 'NULO') AS valor_posterior,
+            COALESCE(NULLIF(TRIM(l.informacao_adicional), ''), 'SEM_DETALHE_ADICIONAL') AS informacao_adicional_norm,
+            NULLIF(TRIM(l.codigo_motivo), '') AS codigo_motivo_norm,
+            l.data_evento,
+            l.eh_matriz,
+            l.mes_referencia
+        FROM tcc_receita.silver_intermediate.log_eventos_negocio l
+        CROSS JOIN params p
+        WHERE l.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
+          AND l.pk IS NOT NULL
+    ) x
 )
-SELECT 
+SELECT
     ASSERT_TRUE(m.total_linhas > 0, 'ERRO DQ [fato_mudanca_estado]: Nenhum evento carregado para o período informado!'),
-    ASSERT_TRUE(m.fks_nulas = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.fks_nulas, ' chaves estrangeiras nulas encontradas!')),
-    ASSERT_TRUE(oep.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', oep.qtd, ' sk_empresa_posterior órfãs em relação à dim_empresa!')),
-    ASSERT_TRUE(oea.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', oea.qtd, ' sk_empresa_anterior órfãs em relação à dim_empresa!')),
-    ASSERT_TRUE(ocp.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', ocp.qtd, ' sk_grupo_cnae_posterior órfãs em relação à dim_grupo_cnae!')),
-    ASSERT_TRUE(oca.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', oca.qtd, ' sk_grupo_cnae_anterior órfãs em relação à dim_grupo_cnae!')),
-    ASSERT_TRUE(om.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', om.qtd, ' sk_mudanca_estado órfãs em relação à dim_mudanca_estado!')),
-    ASSERT_TRUE(ot.qtd = 0, CONCAT('ERRO DQ [fato_mudanca_estado]: ', ot.qtd, ' sk_tempo órfãs em relação à dim_tempo!'))
-FROM metricas m 
-CROSS JOIN orfaos_emp_post oep
-CROSS JOIN orfaos_emp_ant oea
-CROSS JOIN orfaos_cnae_post ocp
-CROSS JOIN orfaos_cnae_ant oca
-CROSS JOIN orfaos_mudanca om
-CROSS JOIN orfaos_tempo ot;
+    ASSERT_TRUE(m.qtd_sem_mudanca = 0,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.qtd_sem_mudanca, ' de ', m.total_linhas, ' linhas com sk_mudanca_estado = -1 (assinatura não casou com a dimensão)!')),
+    ASSERT_TRUE(m.qtd_sem_tempo = 0,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.qtd_sem_tempo, ' de ', m.total_linhas, ' linhas com sk_tempo = -1 (mês não existe em dim_tempo)!')),
+    ASSERT_TRUE(m.qtd_sem_cnpj <= 0.001 * m.total_linhas,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.qtd_sem_cnpj, ' de ', m.total_linhas, ' linhas com cnpj_raiz NULL (limite 0,1%)!')),
+    ASSERT_TRUE(m.qtd_sem_empresa_post <= 0.01 * m.total_linhas,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.qtd_sem_empresa_post, ' de ', m.total_linhas, ' linhas com sk_empresa_posterior = -1 (limite 1%)!')),
+    ASSERT_TRUE(m.qtd_eventos_distintos = m.total_linhas,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: ', m.total_linhas, ' linhas para ', m.qtd_eventos_distintos, ' eventos distintos (duplicidade por pareamento de versões)!')),
+    ASSERT_TRUE(m.total_linhas = ld.qtd,
+        CONCAT('ERRO DQ [fato_mudanca_estado]: reconciliação falhou: ', m.total_linhas, ' linhas no fato x ', ld.qtd, ' linhas distintas no log!'))
+FROM metricas m
+CROSS JOIN log_distinto ld;

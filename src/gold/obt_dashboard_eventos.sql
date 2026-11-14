@@ -10,17 +10,17 @@ CREATE TABLE IF NOT EXISTS tcc_receita.gold.obt_dashboard_eventos (
     tipo_evento STRING COMMENT 'Tipo do evento de negócio originado na Silver.',
     transicao_detalhe STRING COMMENT 'Par valor_anterior -> valor_posterior.',
     motivo_detalhe STRING COMMENT 'Descrição complementar do motivo cadastral ou data.',
-    categoria_macro_evento STRING COMMENT 'Classificação amigável do evento para dashboards.',
+    categoria_macro_evento STRING COMMENT 'Categoria do evento, vinda de dim_mudanca_estado.categoria_evento (regra por código de motivo; sem regex). NAO IDENTIFICADO só se a dimensão não casar.',
     razao_social STRING COMMENT 'Razão social da empresa.',
     nome_fantasia STRING COMMENT 'Nome fantasia da matriz.',
     porte_anterior STRING COMMENT 'Enquadramento de porte antes do evento (MEI, ME, EPP, DEMAIS, NAO APLICAVEL).',
-    porte_empresa STRING COMMENT 'Enquadramento de porte após o evento (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO).',
+    porte_empresa STRING COMMENT 'Enquadramento de porte (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO). Em MUDOU ESTADO CADASTRAL com situação posterior diferente de ATIVA (baixa, inaptidão, suspensão...) e versão anterior existente, usa o porte ANTERIOR (ao ser baixado o MEI vira ME e distorceria a baixa; backlog B23); nos demais eventos, o porte posterior.',
     situacao_cadastral_anterior STRING COMMENT 'Situação cadastral antes do evento.',
     situacao_cadastral_posterior STRING COMMENT 'Situação cadastral após o evento.',
-    opcao_mei_anterior BOOLEAN COMMENT 'Status MEI antes do evento.',
-    opcao_mei_posterior BOOLEAN COMMENT 'Status MEI após o evento.',
-    opcao_simples_anterior BOOLEAN COMMENT 'Status Simples Nacional antes do evento.',
-    opcao_simples_posterior BOOLEAN COMMENT 'Status Simples Nacional após o evento.',
+    opcao_mei_anterior BOOLEAN COMMENT 'Status MEI antes do evento. NULL = desconhecido (NULL é diferente de FALSE).',
+    opcao_mei_posterior BOOLEAN COMMENT 'Status MEI após o evento. NULL = desconhecido (NULL é diferente de FALSE).',
+    opcao_simples_anterior BOOLEAN COMMENT 'Status Simples Nacional antes do evento. NULL = desconhecido (NULL é diferente de FALSE).',
+    opcao_simples_posterior BOOLEAN COMMENT 'Status Simples Nacional após o evento. NULL = desconhecido (NULL é diferente de FALSE).',
     capital_social DOUBLE COMMENT 'Capital social em Reais (BRL) após o evento.',
     uf STRING COMMENT 'UF consolidada da matriz.',
     municipio STRING COMMENT 'Município consolidado da matriz.',
@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tcc_receita.gold.obt_dashboard_eventos (
     grupo_cnae STRING COMMENT 'Nome do grupo CNAE após o evento.',
     divisao_cnae STRING COMMENT 'Nome da divisão CNAE após o evento.',
     grande_area_cnae STRING COMMENT 'Grande setor econômico após o evento.',
+    entidade_tipo STRING COMMENT 'Granularidade do evento: EMPRESA, ESTABELECIMENTO, TRIBUTARIO ou SOCIO.',
+    eh_matriz BOOLEAN COMMENT 'TRUE se o evento é da matriz; FALSE se de filial; NULL quando não se aplica. Indicadores de empresa usam só eh_matriz = TRUE.',
+    codigo_motivo STRING COMMENT 'Código do motivo da situação cadastral (só em MUDOU ESTADO CADASTRAL); NULL nos demais.',
+    data_evento DATE COMMENT 'Data real do evento declarada pela Receita (pode ser NULL). Não usar para somar fluxo mensal: o relógio dos fluxos é mes_referencia (mês de detecção).',
+    mes_evento STRING COMMENT 'Mês (yyyy-MM) de data_evento; NULL se não houver data.',
     data_carga_etl TIMESTAMP COMMENT 'Timestamp de carga na camada Gold.'
 )
 USING DELTA
@@ -74,28 +79,24 @@ SELECT /*+ BROADCAST(t, sc, cnae_ant, cnae_post) */
     sc.tipo_mudanca_estado AS tipo_evento,
     sc.detalhe_mudanca_estado AS transicao_detalhe,
     sc.descricao_adicional AS motivo_detalhe,
-    CASE 
-        WHEN sc.tipo_mudanca_estado = 'EMPRESA NASCEU' THEN 'ABERTURA'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'FALENCIA|FALÊNCIA' THEN 'FECHAMENTO POR FALENCIA'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'OBITO|ÓBITO' THEN 'EXTINCAO POR OBITO (MEI)'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'LIQUIDACAO|LIQUIDAÇÃO' THEN 'EXTINCAO POR LIQUIDACAO'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND UPPER(COALESCE(sc.descricao_adicional, '')) RLIKE 'OMISSAO|OMISSÃO|INAPTIDAO|INAPTIDÃO' THEN 'INAPTIDAO FISCAL / OMISSAO'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'BAIXADA' THEN 'BAIXA VOLUNTARIA / OUTRAS'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'INAPTA' THEN 'INAPTIDAO FISCAL'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'SUSPENSA' THEN 'SUSPENSAO TEMPORARIA'
-        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL' AND sc.valor_posterior = 'NULA' THEN 'INSCRICAO NULA / VICIOS'
-        ELSE COALESCE(sc.tipo_mudanca_estado, 'NAO IDENTIFICADO')
-    END AS categoria_macro_evento,
+    COALESCE(sc.categoria_evento, 'NAO IDENTIFICADO') AS categoria_macro_evento,
     COALESCE(NULLIF(c_post.razao_social, 'NAO APLICAVEL / INEXISTENTE'), c_ant.razao_social, 'NAO IDENTIFICADO') AS razao_social,
     COALESCE(c_post.nome_fantasia_matriz, c_ant.nome_fantasia_matriz) AS nome_fantasia,
     COALESCE(c_ant.enquadramento_porte_analitico, 'NAO APLICAVEL') AS porte_anterior,
-    COALESCE(NULLIF(c_post.enquadramento_porte_analitico, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS porte_empresa,
+    -- Evento que tira a empresa de ATIVA (e há versão anterior): porte anterior (B23); senão, o posterior.
+    CASE
+        WHEN sc.tipo_mudanca_estado = 'MUDOU ESTADO CADASTRAL'
+         AND sc.valor_posterior <> 'ATIVA'
+         AND f.sk_empresa_anterior <> -1
+            THEN COALESCE(NULLIF(c_ant.enquadramento_porte_analitico, 'NAO APLICAVEL'), 'NAO IDENTIFICADO')
+        ELSE COALESCE(NULLIF(c_post.enquadramento_porte_analitico, 'NAO APLICAVEL'), 'NAO IDENTIFICADO')
+    END AS porte_empresa,
     COALESCE(c_ant.situacao_cadastral_matriz, 'INEXISTENTE') AS situacao_cadastral_anterior,
     COALESCE(c_post.situacao_cadastral_matriz, 'NAO IDENTIFICADO') AS situacao_cadastral_posterior,
-    COALESCE(c_ant.opcao_pelo_mei, FALSE) AS opcao_mei_anterior,
-    COALESCE(c_post.opcao_pelo_mei, FALSE) AS opcao_mei_posterior,
-    COALESCE(c_ant.opcao_pelo_simples, FALSE) AS opcao_simples_anterior,
-    COALESCE(c_post.opcao_pelo_simples, FALSE) AS opcao_simples_posterior,
+    c_ant.opcao_pelo_mei AS opcao_mei_anterior,
+    c_post.opcao_pelo_mei AS opcao_mei_posterior,
+    c_ant.opcao_pelo_simples AS opcao_simples_anterior,
+    c_post.opcao_pelo_simples AS opcao_simples_posterior,
     COALESCE(c_post.capital_social, c_ant.capital_social, 0.0) AS capital_social,
     COALESCE(NULLIF(c_post.uf, 'NA'), NULLIF(c_ant.uf, 'NA'), 'NI') AS uf,
     COALESCE(NULLIF(c_post.municipio, 'NAO APLICAVEL'), NULLIF(c_ant.municipio, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS municipio,
@@ -111,6 +112,11 @@ SELECT /*+ BROADCAST(t, sc, cnae_ant, cnae_post) */
     COALESCE(cnae_post.nome_grupo, 'NAO ESPECIFICADO') AS grupo_cnae,
     COALESCE(cnae_post.nome_divisao, 'NAO ESPECIFICADO') AS divisao_cnae,
     COALESCE(cnae_post.grande_setor_economico, 'OUTROS / NAO ESPECIFICADO') AS grande_area_cnae,
+    f.entidade_tipo,
+    f.eh_matriz,
+    sc.codigo_motivo,
+    f.data_evento,
+    DATE_FORMAT(f.data_evento, 'yyyy-MM') AS mes_evento,
     NOW() AS data_carga_etl
 FROM tcc_receita.silver_final.fato_mudanca_estado f
 CROSS JOIN params p

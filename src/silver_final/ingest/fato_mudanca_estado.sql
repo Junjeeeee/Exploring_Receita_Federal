@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.fato_mudanca_estado (
     mes_referencia STRING COMMENT 'Mês do evento (YYYY-MM); partição da fato.',
     data_carga_etl TIMESTAMP COMMENT 'Timestamp de processamento na Silver Final.',
     entidade_tipo STRING COMMENT 'Granularidade da entidade que originou o evento.',
-    pk_entidade_origem STRING COMMENT 'PK lógica original da entidade na Silver Intermediate.'
+    pk_entidade_origem STRING COMMENT 'PK lógica original da entidade na Silver Intermediate.',
+    data_evento DATE COMMENT 'Dimensão degenerada: data real do evento declarada pela Receita (pode ser NULL). Serve a tempo-até-evento; nunca some fluxo mensal por ela (o relógio dos fluxos é mes_referencia).',
+    eh_matriz BOOLEAN COMMENT 'Dimensão degenerada: TRUE se o evento é da matriz; FALSE se de filial; NULL quando não se aplica (ex.: sócios).'
 )
 USING DELTA
 PARTITIONED BY (mes_referencia)
@@ -54,6 +56,9 @@ logs_base AS (
         COALESCE(NULLIF(TRIM(l.valor_antigo), ''), 'NULO') AS valor_anterior,
         COALESCE(NULLIF(TRIM(l.valor_novo), ''), 'NULO') AS valor_posterior,
         COALESCE(NULLIF(TRIM(l.informacao_adicional), ''), 'SEM_DETALHE_ADICIONAL') AS informacao_adicional_norm,
+        NULLIF(TRIM(l.codigo_motivo), '') AS codigo_motivo_norm,  -- NULL = sem motivo (igual à dimensão)
+        l.data_evento,
+        l.eh_matriz,
         l.mes_referencia,
         m.cnpj_basico AS cnpj_raiz
     FROM tcc_receita.silver_intermediate.log_eventos_negocio l
@@ -76,6 +81,7 @@ logs_com_dimensoes AS (
        AND dme.valor_anterior = l.valor_anterior
        AND dme.valor_posterior = l.valor_posterior
        AND COALESCE(dme.descricao_adicional, 'SEM_DETALHE_ADICIONAL') = l.informacao_adicional_norm
+       AND dme.codigo_motivo <=> l.codigo_motivo_norm
     LEFT JOIN tcc_receita.silver_final.dim_tempo dt
         ON dt.mes_referencia = l.mes_referencia
 ),
@@ -121,6 +127,7 @@ versoes_pareadas AS (
     LEFT JOIN primeira_versao_empresa primeira
         ON l.cnpj_raiz = primeira.cnpj_raiz
 ),
+-- DISTINCT inclui data_evento e eh_matriz: dois eventos com datas diferentes não colapsam.
 resultado AS (
     SELECT DISTINCT
         COALESCE(sk_mudanca_estado, CAST(-1 AS BIGINT)) AS sk_mudanca_estado,
@@ -133,7 +140,9 @@ resultado AS (
         mes_referencia,
         CURRENT_TIMESTAMP() AS data_carga_etl,
         entidade_tipo,
-        pk_entidade_origem
+        pk_entidade_origem,
+        data_evento,
+        eh_matriz
     FROM versoes_pareadas
 )
 INSERT INTO tcc_receita.silver_final.fato_mudanca_estado
@@ -150,5 +159,7 @@ SELECT
     mes_referencia,
     data_carga_etl,
     entidade_tipo,
-    pk_entidade_origem
+    pk_entidade_origem,
+    data_evento,
+    eh_matriz
 FROM resultado;
