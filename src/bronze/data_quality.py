@@ -1,6 +1,3 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.utils import AnalysisException
-
 # Definição de contratos (adicione as colunas essenciais esperadas para cada tabela)
 CONTRATOS_SCHEMA = {
     "empresas": ["cnpj_basico", "razao_social", "natureza_juridica", "capital_social"],
@@ -34,38 +31,38 @@ def validar_volumetria(spark, df, nome_tabela_uc, mes_referencia, threshold_qued
     log_table = "tcc_receita.bronze.dq_metrics_log"
     spark.sql(f"CREATE TABLE IF NOT EXISTS {log_table} (tabela STRING, mes_referencia STRING, contagem BIGINT, verificado_em TIMESTAMP)")
     
-    try:
-        # Compara só com os até 3 meses ANTERIORES: a base cresce com o tempo, e incluir meses
-        # futuros (backfill fora de ordem) faria meses antigos parecerem quedas.
-        media_df = spark.sql(f"""
-            SELECT AVG(contagem) AS media FROM (
-                SELECT contagem FROM {log_table}
+    # Compara só com os até 3 meses ANTERIORES: a base cresce com o tempo, e incluir meses
+    # futuros (backfill fora de ordem) faria meses antigos parecerem quedas.
+    # O log é append-only (várias tasks escrevem em paralelo): se um (tabela, mês) foi
+    # verificado mais de uma vez, vale a linha mais recente por verificado_em.
+    media_df = spark.sql(f"""
+        SELECT AVG(contagem) AS media FROM (
+            SELECT contagem FROM (
+                SELECT mes_referencia, contagem,
+                       ROW_NUMBER() OVER (PARTITION BY mes_referencia ORDER BY verificado_em DESC) AS rn
+                FROM {log_table}
                 WHERE tabela = '{nome_tabela_uc}' AND mes_referencia < '{mes_referencia}'
-                ORDER BY mes_referencia DESC LIMIT 3
-            )
-        """).collect()[0]
-        media_historica = media_df['media'] if media_df['media'] is not None else 0
-        
-        if media_historica > 0:
-            limite_minimo = media_historica * (1 - threshold_queda)
-            if contagem_atual < limite_minimo:
-                mensagem = (f"🚨 ANOMALIA VOLUMÉTRICA em {nome_tabela_uc}!\n"
-                            f"Contagem ({contagem_atual:,}) caiu mais de {threshold_queda*100}% "
-                            f"em relação à média histórica ({int(media_historica):,}).")
-                
-                if forcar_aprovacao:
-                    print(f"  ⚠️ {mensagem}")
-                    print("  🔓 OVERRIDE ATIVADO: A ignorar a anomalia e a forçar a ingestão.")
-                else:
-                    raise ValueError(mensagem)
-                    
-            else:
-                print(f"  ✓ Volumetria dentro do padrão (Média: {int(media_historica):,}).")
-                
-    except Exception as e:
-        if "ANOMALIA" in str(e):
-            raise e
-        print("  ⚠️ Falha ao ler histórico temporal.")
+            ) WHERE rn = 1
+            ORDER BY mes_referencia DESC LIMIT 3
+        )
+    """).collect()[0]
+    # Log ainda vazio (primeira execução): AVG devolve NULL -> sem histórico para comparar.
+    # Qualquer erro real de leitura propaga e derruba a task.
+    media_historica = media_df['media'] if media_df['media'] is not None else 0
 
-    spark.sql(f"DELETE FROM {log_table} WHERE tabela = '{nome_tabela_uc}' AND mes_referencia = '{mes_referencia}'")
+    if media_historica > 0:
+        limite_minimo = media_historica * (1 - threshold_queda)
+        if contagem_atual < limite_minimo:
+            mensagem = (f"🚨 ANOMALIA VOLUMÉTRICA em {nome_tabela_uc}!\n"
+                        f"Contagem ({contagem_atual:,}) caiu mais de {threshold_queda*100}% "
+                        f"em relação à média histórica ({int(media_historica):,}).")
+
+            if forcar_aprovacao:
+                print(f"  ⚠️ {mensagem}")
+                print("  🔓 OVERRIDE ATIVADO: A ignorar a anomalia e a forçar a ingestão.")
+            else:
+                raise ValueError(mensagem)
+        else:
+            print(f"  ✓ Volumetria dentro do padrão (Média: {int(media_historica):,}).")
+
     spark.sql(f"INSERT INTO {log_table} VALUES ('{nome_tabela_uc}', '{mes_referencia}', {contagem_atual}, current_timestamp())")
