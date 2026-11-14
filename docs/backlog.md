@@ -70,7 +70,7 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | C-15 | Rótulos de "desconhecido" divergentes entre dim e gold | ⬜ |
 | C-20 | DQ da bronze concorrendo em `dq_metrics_log` | ✅ 2026-11-14 (append-only) |
 | C-22 | Argumento digitado errado virava "mês anterior" | ✅ 2026-11-14 |
-| C-23 / B6 | Máscara MEI sem teste vivo; pytest quebrado | ✅ 2026-11-14 (10 testes; falta `poetry lock`) |
+| C-23 / B6 | Máscara MEI sem teste vivo; pytest quebrado | ✅ 2026-11-14 (27 testes; `poetry lock` rodado) |
 | B8 | Volumetria engolia erro de leitura | ✅ 2026-11-14 |
 | — | `ruff check` acusa 105 erros (79 automáticos); ligar no CI depois de limpar | ⬜ |
 | — | Docs desatualizados em relação ao run de 2026-11-08 (tabela em critica §2.1) | ⬜ |
