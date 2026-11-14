@@ -45,7 +45,9 @@ def main(argv=None) -> None:
     parser.add_argument("--mes_referencia_inicial", default="")
     parser.add_argument("--mes_referencia_final", default="")
     parser.add_argument("--modo", choices=["ingestao", "dq", "ambos"], default="ambos")
-    args, _ = parser.parse_known_args(argv)
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     atalhos = {"MENSAIS": MENSAIS, "ESTATICAS": ESTATICAS, "ALL": ESTATICAS + MENSAIS}
     pedido = args.tabelas.strip()

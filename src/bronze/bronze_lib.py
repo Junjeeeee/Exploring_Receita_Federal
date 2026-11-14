@@ -304,7 +304,9 @@ def executar_ingestao_cli(config: TabelaBronzeConfig):
     parser = argparse.ArgumentParser(description=f"Ingestão Bronze: {config.nome_tabela_uc}")
     parser.add_argument("--mes_referencia_inicial", default="", help="Mês inicial (YYYY-MM). Vazio = Mês-1")
     parser.add_argument("--mes_referencia_final", default="", help="Mês final (YYYY-MM). Vazio = Mês-1")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     spark = SparkSession.builder.getOrCreate()
     ingerir_tabela_bronze(spark, config, args.mes_referencia_inicial, args.mes_referencia_final)
@@ -315,7 +317,9 @@ def executar_dq_cli(config: TabelaBronzeConfig):
     parser = argparse.ArgumentParser(description=f"DQ Bronze: {config.nome_tabela_uc}")
     parser.add_argument("--mes_referencia_inicial", default="", help="Mês inicial (YYYY-MM). Vazio = Mês-1")
     parser.add_argument("--mes_referencia_final", default="", help="Mês final (YYYY-MM). Vazio = Mês-1")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     spark = SparkSession.builder.getOrCreate()
     testar_tabela_bronze(spark, config, args.mes_referencia_inicial, args.mes_referencia_final)

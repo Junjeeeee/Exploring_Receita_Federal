@@ -119,7 +119,9 @@ def main(argv=None) -> None:
                         help="Caminhos relativos à raiz do repo, separados por vírgula (executados em ordem).")
     for nome in PARAMETROS:
         parser.add_argument(f"--{nome}", default="", help="YYYY-MM")
-    args, _ = parser.parse_known_args(argv)
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     valores = {nome: getattr(args, nome).strip() for nome in PARAMETROS}
     arquivos = [RAIZ_REPO / a.strip() for a in args.arquivos.split(",") if a.strip()]

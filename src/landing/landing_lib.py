@@ -235,12 +235,19 @@ def _membros_dados_rfb(zip_ref: zipfile.ZipFile):
     return membros
 
 
+def ocultar_token(texto) -> str:
+    """Troca o valor de TOKEN_SHARE por *** em qualquer texto (ex.: mensagem de exceção com a URL)."""
+    token = os.getenv("TOKEN_SHARE") or TOKEN_SHARE
+    texto = str(texto)
+    return texto.replace(token, "***") if token else texto
+
+
 def _log_retry_download(retry_state) -> None:
     """Expõe a causa de cada tentativa sem revelar a URL/token de compartilhamento."""
     erro = retry_state.outcome.exception() if retry_state.outcome else None
     print(
         f"  ⚠️ Falha ao baixar/validar ZIP (tentativa {retry_state.attempt_number}/3): "
-        f"{type(erro).__name__}: {erro}. Nova tentativa será realizada."
+        f"{type(erro).__name__}: {ocultar_token(erro)}. Nova tentativa será realizada."
     )
 
 
@@ -865,7 +872,9 @@ def executar_extract_landing_cli(config: TabelaLandingConfig) -> None:
     parser.add_argument("--mes_referencia_inicial", default="", help="YYYY-MM inicial (vazio = mês anterior)")
     parser.add_argument("--mes_referencia_final", default="", help="YYYY-MM final (vazio = mês inicial)")
     parser.add_argument("--force", action="store_true", help="Força novo download mesmo se o Parquet já existir no S3")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
     extrair_tabela_landing(config, args.mes_referencia_inicial, args.mes_referencia_final, force=args.force)
 
 
@@ -873,5 +882,7 @@ def executar_dq_landing_cli(config: TabelaLandingConfig) -> None:
     parser = argparse.ArgumentParser(description=f"DQ Landing S3: {config.nome_tabela}")
     parser.add_argument("--mes_referencia_inicial", default="", help="YYYY-MM inicial (vazio = mês anterior)")
     parser.add_argument("--mes_referencia_final", default="", help="YYYY-MM final (vazio = mês inicial)")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
     testar_tabela_landing(config, args.mes_referencia_inicial, args.mes_referencia_final)
