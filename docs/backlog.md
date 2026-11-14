@@ -10,21 +10,23 @@
 ## Alvo atual — dashboard funcionando na segunda, 2026-11-16
 
 Spec: [`specs/features/2026-11-14-semantica-eventos-e-fluxos.md`](specs/features/2026-11-14-semantica-eventos-e-fluxos.md).
-Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amostra/`.
+Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amostra/`. Em 2026-11-14 o pipeline inteiro
+(SCD2 → log → silver_final → gold → todos os DQ) passou na amostra e as 11 consultas do dashboard rodaram contra ela.
+Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA, amostra 1%)*.
 
 | ID | O que | Onde | Estado |
 |---|---|---|---|
-| B21 / C-04 | Aberturas subcontadas: evento datado pela data real, empresa só entra no snapshot seguinte. Todo evento passa a ter `mes_referencia` = mês de detecção e `data_evento` = data real | spec §2.1, T1 | ⬜ |
-| C-02 | `dim_empresa` trunca a vigência de 92.613 CNPJs | spec §2.4, T2 | ⬜ |
-| C-03 | `teve_baixa_mes` repetia e contava filial; flags passam a vir da transição da matriz | spec §2.4, T4 | ⬜ |
-| B22 / C-07 | "Falência" = toda baixa; quatro categorias inalcançáveis. Classificação por código de motivo | spec §2.3, T3 | ⬜ |
-| B23 | Porte da baixa usava o estado posterior (MEI virava ME) | spec §2.4, T3/T4 | ⬜ |
-| B24 | UF `'RJ,SP'` etc. (3 CEPs ruins → 5.887 linhas) | T2 | ⬜ |
-| C-16 | Eventos sem versão anterior perdidos (`ENTROU NO MEI`: 443 de ~745 mil) | T1 | ⬜ |
-| C-12 | Dashboard listava razão social de empresário individual | T4, T6 | ⬜ |
-| C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | ⬜ |
-| C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | ⬜ |
-| — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** |
+| B21 / C-04 | Aberturas subcontadas: evento datado pela data real, empresa só entra no snapshot seguinte. Todo evento passa a ter `mes_referencia` = mês de detecção e `data_evento` = data real | spec §2.1, T1 | 🧪 |
+| C-02 | `dim_empresa` trunca a vigência de 92.613 CNPJs | spec §2.4, T2 | 🧪 |
+| C-03 | `teve_baixa_mes` repetia e contava filial; flags passam a vir da transição da matriz | spec §2.4, T4 | 🧪 |
+| B22 / C-07 | "Falência" = toda baixa; quatro categorias inalcançáveis. Classificação por código de motivo | spec §2.3, T3 | 🧪 |
+| B23 | Porte da baixa usava o estado posterior (MEI virava ME) | spec §2.4, T3/T4 | 🧪 |
+| B24 | UF `'RJ,SP'` etc. (3 CEPs ruins → 5.887 linhas) | T2 | 🧪 |
+| C-16 | Eventos sem versão anterior perdidos (`ENTROU NO MEI`: 443 de ~745 mil) | T1 | 🧪 |
+| C-12 | Dashboard listava razão social de empresário individual | T4, T6 | 🧪 |
+| C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | 🧪 |
+| C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | 🧪 |
+| — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** — passo a passo na spec §5 |
 
 ## Decisões pendentes do autor
 
@@ -41,9 +43,9 @@ Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amos
 
 | ID | O que | Onde | Estado |
 |---|---|---|---|
-| C-05 | `socios.sql` não idempotente (versão inativa fantasma ao reexecutar). Tabela atual **não** está contaminada (medido: 0) | critica §4.2, T5 | ⬜ |
-| C-06 | `socios.sql`: bronze vazia fecha todos os vínculos (assert dentro de `GROUP BY`) | critica §4.2, T5 | ⬜ |
-| C-01 | Sobrevivência: morte pela data real, censura no último snapshot | spec §2.4, T4 | ⬜ |
+| C-05 | `socios.sql` não idempotente (versão inativa fantasma ao reexecutar). Tabela atual **não** está contaminada (medido: 0) | critica §4.2, T5 | 🧪 |
+| C-06 | `socios.sql`: bronze vazia fecha todos os vínculos (assert dentro de `GROUP BY`) | critica §4.2, T5 | 🧪 |
+| C-01 | Sobrevivência: morte pela data real, censura no último snapshot | spec §2.4, T4 | 🧪 |
 | C-09 | Bronze descarta sócio sem documento/nome em silêncio; falta reconciliação landing = bronze | critica §4.3 | ⬜ |
 | B17 | Bronze lenta: 3 shuffles completos por mês | backlog_historico | ⬜ |
 | B20 | SCD2 leem a bronze 2×; log lê cada SCD2 4–5× | backlog_historico, critica §6 | ⬜ (log: T1) |
@@ -53,6 +55,9 @@ Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amos
 | B16 | PKs repetidas na Receita (6/mês em sócios, 2–3 em empresas): entender e decidir a regra | backlog_historico | ⬜ |
 | C-11 | `dim_mudanca_estado` com listas de CNAE na chave (cardinalidade alta) | critica §4.1 | ⬜ (parcial em T1/T3) |
 | C-24 | `gerar_job.py` não detecta `.sql` novo; branch e bucket fixos no gerador | critica §4.3 | ⬜ |
+| — | Matriz canônica passou a ser a matriz vigente em cada período (transferência de matriz fazia a empresa sumir da dimensão; achado pelo DQ de continuidade). Com mais de uma matriz no mesmo período e sobreposição parcial, a versão de ordem maior é descartada inteira | `dim_empresa.sql` | 🧪 |
+| — | Município com grafias de fontes diferentes (com acento via CEP, sem acento via domínio RFB) entre municípios distintos; padronizar | `dim_empresa.sql` | ⬜ |
+| — | Coorte: morte no mesmo mês do nascimento vira tempo NULL (`tempo_invalido`); medir em dias | `d_coorte_sobrevivencia.sql` | ⬜ |
 | C-10 | DQ: entidade corrente ausente do último snapshot (hoje: 0) | critica §3.5 | ⬜ |
 
 ## P2 — qualidade e limpeza

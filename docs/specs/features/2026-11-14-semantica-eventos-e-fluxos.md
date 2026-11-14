@@ -1,6 +1,6 @@
 # Feature: semântica de eventos e fluxos (dashboard de 2026-11-16)
 
-**Status:** em implementação · 2026-11-14
+**Status:** implementado e validado na amostra de 1%; **falta executar na base real (T8)** · 2026-11-14
 **Camadas afetadas:** silver_intermediate (log), silver_final, gold, dashboard
 **Branch:** `ceps_ibge_and_dashboard_v2`
 **Origem:** `docs/critica.md` (C-01..C-08, C-12, C-13, C-16, C-17) e backlog B21–B24.
@@ -124,7 +124,8 @@ o posterior (B23). `opcao_*` ficam NULL quando desconhecidos (sem `COALESCE(...,
 | `teve_suspensao_mes` | idem para SUSPENSA |
 | `porte_empresa`, `opcao_pelo_mei`, `opcao_pelo_simples` | valor do mês anterior quando `saiu_estoque_mes` (B23); senão o do mês |
 
-Identidade obrigatória: `estoque_final(M) = estoque_inicial(M) + entradas(M) − saídas(M)` e
+Identidade obrigatória (exceto no baseline, onde não há fluxo por construção):
+`estoque_final(M) = estoque_inicial(M) + entradas(M) − saídas(M)` e
 `estoque_inicial(M) = estoque_final(M−1)`.
 A tabela guarda só linhas em que a empresa está ativa no início ou no fim do mês, ou em que algo mudou
 (abertura ou mudança de situação) — empresas baixadas há anos não geram linha todo mês.
@@ -161,24 +162,47 @@ classificação por código de motivo substitui a por texto; "falência" passa a
 
 ## 3. Tarefas
 
-- [ ] T1 `log_eventos_negocio.sql` + DQ (contrato 2.4)
-- [ ] T2 `dim_empresa.sql` + DQ (C-02, colunas novas, B24)
-- [ ] T3 `dim_mudanca_estado.sql`, `fato_mudanca_estado.sql`, `obt_dashboard_eventos.sql` + DQs
-- [ ] T4 `fato_empresa_mes.sql`, `fato_indicadores_setoriais_mes.sql`, `d_coorte_sobrevivencia.sql`,
+- [x] T1 `log_eventos_negocio.sql` + DQ (contrato 2.4)
+- [x] T2 `dim_empresa.sql` + DQ (C-02, colunas novas, B24)
+- [x] T3 `dim_mudanca_estado.sql`, `fato_mudanca_estado.sql`, `obt_dashboard_eventos.sql` + DQs
+- [x] T4 `fato_empresa_mes.sql`, `fato_indicadores_setoriais_mes.sql`, `d_coorte_sobrevivencia.sql`,
       `dashboard_mercado_ativo.sql`, `dq_gold.sql`
-- [ ] T5 `socios.sql` idempotente e com validação fora do `GROUP BY` (C-05, C-06)
-- [ ] T6 `gerar_dashboard.py` + JSON
-- [ ] T7 ambiente de amostra no SQL warehouse para validar tudo ponta a ponta sem reprocessar a base
+- [x] T5 `socios.sql` idempotente e com validação fora do `GROUP BY` (C-05, C-06)
+- [x] T6 `gerar_dashboard.py` + JSON
+- [x] T7 ambiente de amostra no SQL warehouse para validar tudo ponta a ponta sem reprocessar a base
 - [ ] T8 reexecução real (log → silver_final → gold) — **só com autorização do autor**
 
 ## 4. Critérios de aceite
 
-- [ ] Na amostra: todos os DQ passam; identidade de estoque fecha com diferença zero em todos os meses.
-- [ ] `SUM(teve_abertura_mes)` por mês = matrizes cuja primeira aparição é naquele mês.
-- [ ] Nenhuma `categoria_macro_evento` fora da lista da seção 2.3 + nomes de evento.
-- [ ] `EXPLAIN` de todos os datasets do dashboard sem erro contra as tabelas novas.
-- [ ] Dashboard: todos os widgets atuais continuam existindo.
+- [x] Na amostra: todos os DQ passam; identidade de estoque fecha com diferença zero em todos os meses.
+- [x] `SUM(teve_abertura_mes)` por mês = matrizes cuja primeira aparição é naquele mês.
+- [x] Nenhuma `categoria_macro_evento` fora da lista da seção 2.3 + nomes de evento.
+- [x] Todos os datasets do dashboard executam sem erro contra as tabelas novas (amostra).
+- [x] Dashboard: todos os widgets atuais continuam existindo (19 mantidos, 2 novos).
+- [ ] Dashboard conferido visualmente no workspace.
 
 ## 5. Notas de execução
 
-(preencher)
+**2026-11-14 — amostra de 1% no SQL warehouse serverless 2X-Small** (`scripts/amostra/`, schemas `tcc_receita.amostra_*`):
+
+- Pipeline completo (4 SCD2 → log → silver_final → gold) e os 12 arquivos de DQ passaram. O pipeline todo roda
+  em ~3 min na amostra.
+- `EMPRESA NASCEU` por mês de detecção: 2.988 / 3.195 / 4.060 = matrizes novas no snapshot (antes: ~25% disso).
+- `ENTROU NO MEI`: ~2,3 mil por mês na amostra (antes: ~1). Falências: 4. Reativações: 1.108.
+- Baixas de matriz por porte: MEI 3.738, ME 1.266, DEMAIS 169, EPP 80 (antes o MEI quase não aparecia).
+- Identidade e continuidade de estoque fecham em todos os meses. O DQ de continuidade achou um defeito na regra
+  da matriz canônica (transferência de matriz entre estabelecimentos) — corrigido: vale a matriz de cada período.
+- As 11 consultas do dashboard rodaram contra a amostra. A prévia do dashboard foi publicada no workspace, mas
+  **a renderização dos widgets não foi conferida visualmente**.
+- Achado de spec: "situação igual, só o motivo mudou" precisa ser a primeira condição das categorias.
+
+**Para executar na base real (T8), nesta ordem:**
+
+1. Rodar uma vez `src/jobs/migracoes/2026-11-14_semantica_eventos.sql` (apaga as 5 tabelas que mudaram de schema).
+2. Colar o YAML novo no Job (o DAG mudou: `gold_fato_empresa_mes` não depende mais da OBT).
+3. Rodar o Job com `2023-05` a `2023-08` **só a partir de `si_log_eventos_negocio`** (bronze e as 4 SCD2 não
+   mudaram de resultado; `si_socios` só precisa rodar de novo quando houver mês novo).
+4. Reimportar `src/gold/dashboard/tcc_receita.lvdash.json` no dashboard oficial.
+
+Risco conhecido: `dim_empresa` ficou mais cara (estimativa do autor da mudança: 1,5–2× o tempo anterior);
+`fato_empresa_mes` deve ficar mais barata (guarda ~23 mi linhas/mês em vez de 54 mi).
