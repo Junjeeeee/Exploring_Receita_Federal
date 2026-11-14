@@ -56,7 +56,8 @@ fluxos de empresa vêm **só das transições da matriz**. Eventos de filial con
 
 | Condição (primeira que casar) | `categoria_evento` |
 |---|---|
-| posterior = `ATIVA` e anterior ≠ `ATIVA` | `REATIVACAO` |
+| situação igual, só o motivo mudou | `MUDANCA DE MOTIVO` |
+| posterior = `ATIVA` | `REATIVACAO` |
 | posterior = `BAIXADA`, motivo ∈ {05, 06, 10} | `FALENCIA OU LIQUIDACAO JUDICIAL` |
 | posterior = `BAIXADA`, motivo = 75 | `EXTINCAO POR OBITO (MEI)` |
 | posterior = `BAIXADA`, motivo ∈ {02, 03, 04} | `REORGANIZACAO SOCIETARIA` |
@@ -66,7 +67,6 @@ fluxos de empresa vêm **só das transições da matriz**. Eventos de filial con
 | posterior = `INAPTA` | `INAPTIDAO` |
 | posterior = `SUSPENSA` | `SUSPENSAO` |
 | posterior = `NULA` | `ANULACAO` |
-| situação igual, só o motivo mudou | `MUDANCA DE MOTIVO` |
 | qualquer outro caso | `OUTRA MUDANCA CADASTRAL` |
 
 Demais eventos: `EMPRESA NASCEU` → `ABERTURA`; os outros → o próprio nome do evento.

@@ -1,86 +1,97 @@
-# Backlog — problemas conhecidos e pendências
+# Backlog
 
-Legenda: ✅ confirmado no código · 🔎 provável (análise estática, não executado)
+> Reescrito em 2026-11-14. Só o que está **aberto**, por prioridade. Um item = uma linha curta; o detalhe
+> (evidência, cenário, correção) fica no documento apontado em **Onde**.
+> Histórico e narrativa dos itens antigos: [`backlog_historico.md`](backlog_historico.md).
+> Origem dos IDs: `B` = backlog antigo · `C` = [`critica.md`](critica.md) (2026-11-14) · `D` = decisão pendente.
 
-## Bugs
+**Estado:** ⬜ aberto · 🔧 código pronto, falta executar · 🧪 validado na amostra, falta rodar na base · ✅ feito
 
-| # | Camada | Problema | Evidência |
+## Alvo atual — dashboard funcionando na segunda, 2026-11-16
+
+Spec: [`specs/features/2026-11-14-semantica-eventos-e-fluxos.md`](specs/features/2026-11-14-semantica-eventos-e-fluxos.md).
+Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amostra/`.
+
+| ID | O que | Onde | Estado |
 |---|---|---|---|
-| ~~B1~~ ✔ corrigido 2026-11-08 | bronze | Todos os `src/bronze/tests/*.py` importam `executar_ingestao_cli` e chamam `executar_ingestao_dq_cli` (inexistente) → NameError. Correto: `executar_dq_cli`. | `bronze_lib.py:311` |
-| ~~B2~~ ✔ corrigido 2026-11-08 | bronze | `testar_tabela_bronze` filtra `mes_referencia` também em tabelas estáticas (coluna não existe). | `bronze_lib.py:270` |
-| ~~B3~~ ✔ corrigido 2026-11-08 | gold | `ds_micro_comparativo_setorial.sql` usa colunas inexistentes (`class_name`, `cnae_name`, `great_area_of_activity_name`) → reais: `nome_classe`, `descricao_cnae`, `grande_setor_economico`. | linhas 5, 10 |
-| ~~B4~~ ✔ corrigido 2026-11-08 | silver_final | `dq_dim_cnae` conta `codigo_cnae IS NULL` como chave nula, mas sentinelas -1/-2 têm `codigo_cnae` NULL → DQ falharia. | `tests/dq_dim_cnae.sql:5` |
-| B5 🔎 | silver_final | `fato_mudanca_estado`: join anterior usa `fim_vigencia >= mes` e posterior `<` (inconsistente); pode duplicar eventos; fallback para primeira versão pode atribuir estado errado. | `ingest/fato_mudanca_estado.sql` |
-| B6 ✅ | tests | `tests/test_extractor.py` importa `cnpj_pipeline.extract.extractor` (removido) → pytest/CI falham na coleta. `test_cdc_logic.py`/`test_dimensions.py` vazios. | `src/cnpj_pipeline/` só `__pycache__` |
-| B7 🔎 | silver_int | `log_eventos_negocio.sql` exige parâmetros literais (sem fallback); `dq_log_eventos_negocio` com default diferente das SCD2. | readme |
-| ~~B9~~ ✔ corrigido 2026-11-08 | silver_int | **Primeiro mês disponível é 2023-05** (não existe 2023-04 na RFB). `socios.sql` exige o mês anterior a `mes_ini` (ASSERT `snapshots_validos`) → 1ª execução com 2023-05 falha. Falta um modo **carga inicial (baseline)**: 2023-05 abre as versões SCD2 sem gerar eventos de entrada/saída/criação (senão o log teria todo o estoque como "evento" em 2023-05). Eventos reais começam em 2023-06. Verificar o mesmo nas outras SCD2 e em `log_eventos_negocio`. | `socios.sql:63-68` |
-| ~~B10~~ ✔ corrigido 2026-11-08 | bronze | `dim_empresa` lê `bronze.ceps`, mas não havia config/ingest bronze de ceps. | `dim_empresa.sql:96` |
-| ~~B11~~ ✔ corrigido 2026-11-08 | gold | `INSERT OVERWRITE ... REPLACE WHERE` (inválido) e predicado com `CURRENT_DATE()` em `fato_empresa_mes`/`obt_dashboard_eventos`. | — |
-| ~~B12~~ ✔ corrigido 2026-11-08 | silver | `to_date(x,'yyyyMMdd')` quebra com ANSI ligado ('00000000') → `try_to_date`. | — | Revisado: `try_to_date` não existe no DBR 15.4 (Spark 3.5) → `CAST(try_to_timestamp(x, fmt) AS DATE)`.
-| B13 🔎 | silver_int | Eventos por data (`EMPRESA NASCEU`, `SOCIO ENTROU NO QSA`) só entram se a data cair **dentro da janela** processada. Com publicação atrasada (empresa de 2023-08 aparece só no snapshot 2023-09), rodar mês a mês perde o evento. Run único da janela completa não sofre. | `log_eventos_negocio.sql` |
-| ~~B14~~ ✔ corrigido 2026-11-08 | bronze | `CREATE CATALOG IF NOT EXISTS` sem *managed location* falha no metastore sem storage root. Catálogo virou pré-requisito manual (README do Job). | `bronze_lib.py` |
-| ~~B15~~ ✔ corrigido 2026-11-08 | landing | Estáticas `cnaes_ibge`, `paises`, `municipios`, `naturezas_juridicas`, `qualificacoes_socios` só existiam no layout antigo (`<pasta>/mes_referencia=*/`); a bronze lê `<pasta>/dados.parquet`. Reextraídas com a landing atual (snapshot 2023-08). Sobram pastas antigas órfãs (`cnaes/`, `motivos/`, `naturezas/`, `qualificacoes/` e as partições mensais das estáticas): apagar depois de confirmar que nada as lê. | S3 |
-| B16 🔎 contornado 2026-11-08 | bronze/silver_int | A Receita publica PKs repetidas com conteúdo divergente (empresas: mesmo `cnpj_basico`; socios: mesma pessoa no mesmo CNPJ, provavelmente com duas qualificações). A bronze falhava. Agora a **bronze mantém todas** (só remove cópias idênticas e loga a contagem) e a **silver desempata** no `ROW_NUMBER` por `pk, mes_referencia` com `change_hash DESC` (determinístico). **Pendente:** medir volume (`SELECT pk, COUNT(*) ... HAVING COUNT(*) > 1` na bronze), entender a causa e decidir a regra (ex.: socios com várias qualificações). | `bronze_lib.py::_remover_copias_exatas`, `silver_intermediate/ingest/*.sql` |
-| B17 🔎 | bronze (perf) | Ingestão bronze lenta (empresas 27 min, estabelecimentos 55 min, dados_simples 46 min p/ 4 meses). Event log (2026-11-08, empresas): por mês ~1,6 GB de Parquet viram **3 shuffles completos de ~7 GB**: `dropDuplicates()` em todas as colunas na contagem de PKs repetidas, de novo na escrita (sem cache) e o shuffle do `optimizeWrite`. Sem spill, GC baixo. Proposta: (1) tirar o `dropDuplicates()` da bronze — cópias idênticas a silver já elimina no `ROW_NUMBER` por pk/mês; (2) mover a contagem de PKs repetidas para a DQ (`groupBy(pk)` só da coluna pk); (3) `optimizeWrite=false` na escrita da bronze (1 mês por escrita já dá arquivos de bom tamanho). (4) ler a janela inteira de uma vez (`mes_referencia` da partição) e gravar com `partitionBy` + `replaceWhere` na faixa — hoje os meses rodam em sequência e a ocupação média dos cores ficou em ~40–60% (custos fixos por mês: counts, commit, ALTER COMMENT, cauda de stage); só faz sentido junto com (1), senão vira um shuffle único de ~30 GB. Na janela completa, blocos de 6–12 meses. Estimativa: 3–4× mais rápido. Importante antes da janela completa (~40 meses). | `bronze_lib.py` |
-| ~~B18~~ ✔ confirmado 2026-11-08 | silver_int (DQ) | `dq_log_eventos_negocio` falhou: 31.245 eventos com `valor_novo` NULL (run 2026-11-08). Hipótese: `MUDOU LISTA CNAE SECUNDARIO` para lista vazia (legítimo). DQ passou a aceitar só esse caso e a listar a contagem por tipo no erro. Confirmado no repair seguinte: com a exceção só para CNAE secundário o DQ passou, logo todos os NULL vinham desse evento. | `tests/dq_log_eventos_negocio.sql` |
-| B19 ✔ corrigido 2026-11-08 | silver_final | `dq_dim_empresa`: 3 colisões de `sk_empresa` (`cnpj_basico|valid_since`) no run 2026-11-08. Hipótese: CNPJ raiz com mais de um estabelecimento marcado como matriz. `dim_empresa` passou a usar matriz canônica (ordem 0001, senão menor ordem) e o DQ mostra amostra das sk em colisão. DQ passou após a correção (hipótese consistente). Pendente: medir quantos CNPJs têm >1 matriz e citar como limitação dos dados. | `ingest/dim_empresa.sql` |
-| B20 🔎 | silver_int / silver_final / gold (perf) | Event log do run verde (2026-11-08), 4 meses: `si_estabelecimentos` 38 min lê **76 GB** (bronze lida ≥2× na fonte do MERGE: `pks_afetadas` + `bronze_raw`, e de novo no *materialize source*) e faz **97 GB** de shuffle; `si_socios` 25 min / 69 GB; `si_dados_simples` 28 min; `gold_fato_empresa_mes` 84 GB de shuffle para 0,9 GB de entrada (expansão empresa × mês); `sf_dim_empresa` único com spill (7,6 GB, joins por intervalo). Spill ≈ 0 e GC baixo no resto → memória sobra; o custo é volume de shuffle. Propostas: (1) SCD2 em duas fases — detectar mudanças só com `(pk, mes_referencia, change_hash)` e buscar os atributos completos apenas das linhas que abrem versão; (2) ler a bronze uma vez (CTE materializada ou tabela temporária) em vez de duas; (3) carga inicial via `INSERT OVERWRITE` em vez de MERGE (D-08 permite em dev); (4) avaliar `m5d` em vez de `r5d` (memória ociosa) ou mais workers. Estáticas: 3–5 min cada sem trabalho de executor → custo é `ALTER COLUMN COMMENT` coluna a coluna (1 commit Delta cada); aplicar comentários no `CREATE`/uma vez só (entra no B17). | `silver_intermediate/ingest/*.sql`, `gold/fato_empresa_mes.sql` |
-| B21 🔴 | gold (semântica) | **Aberturas subcontadas / saldo inconsistente.** Estoque de ativas cresce ~+190 mil/mês (22,25 M → 22,93 M), mas aberturas − baixas dá ~−100 mil/mês e **todas** as UFs ficam com saldo negativo. Log tem 1,15 M `EMPRESA NASCEU` em 4 meses, `fato_empresa_mes` só ~400 mil aberturas. Suspeitas: evento por estabelecimento × fato por CNPJ raiz; empresa nascida aparece no snapshot só depois (B13) e o join com a versão do mês falha. Não mostrar saldo/aberturas como resultado até investigar. | `gold/fato_empresa_mes.sql`, `obt_dashboard_eventos.sql` |
-| B22 🔴 | gold (semântica) | **"Falência" ≈ toda baixa.** Regex `LIQUIDACAO` em `categoria_macro_evento` pega o motivo mais comum de baixa voluntária (extinção por encerramento/liquidação voluntária) → 527 mil "EXTINCAO POR LIQUIDACAO"; `teve_falencia_mes` conta isso → falências ≈ baixas (~180 mil/mês). Classificar por **código** de motivo (lista do repo antigo: 01,05,06,10,13,14,15,61,63,64,66, ver `docs/mineracao_receita.md`) e separar falência real. | `obt_dashboard_eventos.sql`, `fato_empresa_mes.sql` |
-| B23 🟠 | gold (semântica) | **Porte da baixa usa o estado posterior.** MEI tem só 2 mil baixas e ME 509 mil: ao ser baixada, a empresa sai do MEI e vira "ME". Para fechamentos, usar o porte **anterior** ao evento. | `obt_dashboard_eventos.sql` |
-| B24 🟠 | silver_final | UF com valores concatenados (`PB,RN`, `RJ,SP`, `AP,RS`) na gold — provável agregação de UFs distintas em algum ponto (ligado a B19?). | `dim_empresa.sql` |
-| — | medição | B16: socios tem **6 PKs repetidas por mês**, empresas 2–3. B19: **3** CNPJs com >1 matriz ativa. Ambos irrisórios (citar como limitação). Volumes 4 meses: bronze empresas 217 M, estabelecimentos 228 M, socios 92 M linhas; log 4,26 M eventos; dim_empresa 56 M versões. | — |
-| B8 🔎 (parcial: média só de meses anteriores) | bronze | Volumetria: erros de leitura do histórico engolidos; média inclui meses futuros; `forcar_aprovacao` não ligado. | `data_quality.py:375` |
+| B21 / C-04 | Aberturas subcontadas: evento datado pela data real, empresa só entra no snapshot seguinte. Todo evento passa a ter `mes_referencia` = mês de detecção e `data_evento` = data real | spec §2.1, T1 | ⬜ |
+| C-02 | `dim_empresa` trunca a vigência de 92.613 CNPJs | spec §2.4, T2 | ⬜ |
+| C-03 | `teve_baixa_mes` repetia e contava filial; flags passam a vir da transição da matriz | spec §2.4, T4 | ⬜ |
+| B22 / C-07 | "Falência" = toda baixa; quatro categorias inalcançáveis. Classificação por código de motivo | spec §2.3, T3 | ⬜ |
+| B23 | Porte da baixa usava o estado posterior (MEI virava ME) | spec §2.4, T3/T4 | ⬜ |
+| B24 | UF `'RJ,SP'` etc. (3 CEPs ruins → 5.887 linhas) | T2 | ⬜ |
+| C-16 | Eventos sem versão anterior perdidos (`ENTROU NO MEI`: 443 de ~745 mil) | T1 | ⬜ |
+| C-12 | Dashboard listava razão social de empresário individual | T4, T6 | ⬜ |
+| C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | ⬜ |
+| C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | ⬜ |
+| — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** |
 
-## Dívidas / limpeza
+## Decisões pendentes do autor
 
-- `fato_indicadores_macro_mes` é seed hardcoded até 2025-12 → ingerir BCB (`bronze.indicadores_bcb`).
-- `d_coorte_sobrevivencia.sql` cria `ds_coorte_sobrevivencia` (nome divergente); usa `FIRST()` não determinístico e `CURRENT_DATE`.
-- Typo: `src/silver_final/tests/dq_dim_mucanca_estado.sql`.
-- Sem DQ para `dim_tempo`, `fato_indicadores_*`, `ds_*`.
-- CTE `ponte_primaria` e normalização de CNAE duplicadas em vários SQL.
-- `fato_empresa_mes` acoplado às strings de `categoria_macro_evento` da OBT.
-- `vw_dashboard_eventos_cnae` sem consumidor — avaliar remoção.
-- Dashboard v0 (`src/gold/dashboard/`, spec `features/dashboard-v0.md`): importar e validar formato; `ds_micro_*` ficaram sem uso (avaliar remoção junto com `vw_dashboard_eventos_cnae`).
-- Bronze descarta linhas com PK nula sem contar/registrar.
-- `CONTRATOS_SCHEMA` (5 tabelas) duplica `colunas_esperadas` das configs.
-- Landing: tabelas estáticas nunca atualizam sem `--force`; DQ só schema+contagem; `min_linhas` hardcoded; `print` em vez de logging.
-- Landing: código morto (`descarregar_e_extrair`, `_require_bucket`, `TOKEN_SHARE`/`URL_DOWNLOAD_BASE` no import).
-- `python-dateutil` usado mas não declarado em `pyproject.toml`.
-- `pyproject` aponta para pacote `cnpj_pipeline` (vazio).
-- `tmp_receita/` não está no `.gitignore` (diagnósticos de ZIP podem ser commitados).
-- Vazios: `README.md`, `Makefile`, `config/dev.yaml`, `config/prod.yaml`.
-- Legado na raiz: `checkpoint_estado.json`, `last_processed_month.txt`.
-- Notebooks `backfill_motivos.ipynb` e `New Notebook ...` importam módulos inexistentes.
-- CI: sem `ruff`; deploy Databricks é `echo`. Não há runner/Job definition (DABs) para os SQL.
+| ID | Pergunta | Padrão adotado enquanto isso |
+|---|---|---|
+| D-a | **LGPD:** 2.816 razões sociais com 11 dígitos seguidos fora da condição da máscara (natureza 2135 com porte 03/05: 2.816; mais ~370 em outras naturezas, que podem não ser CPF). A condição `porte = '01'` é estreita. Ampliar para toda natureza 2135? Exige reextrair `empresas` na landing | landing intocada; gold marca `exibir_razao_social = FALSE` |
+| D-b | Baixa de filial conta para a empresa? | não (D-14): empresa = matriz |
+| D-c | Lista de "falência" por código | {05, 06, 10} (D-15) |
+| D-d | Reativação (INAPTA → ATIVA, ~37 mil/mês) entra como fluxo próprio no dashboard? | sim |
+| D-e | Dados de contato de MEI (telefone, e-mail, logradouro) em silver_final/gold | mantidos; não aparecem no dashboard |
+| D-f | Plano B do TCC (dashboard + análises; grafo e ML em trabalhos futuros) — decidir com a orientadora | — |
 
-## Ideias e pendências novas (2026-11-08)
+## P1 — antes da janela completa (~40 meses)
 
-- **CI útil** (o atual quebra): ruff + pytest só de testes locais sem rede (landing) + validação de sintaxe dos
-  SQL (ex.: `sqlglot` dialeto Spark, trocando `{{param}}` por literais). Remover o deploy `echo`.
-- **Etapa exploratória local**: baixar recorte pequeno (ex.: Niterói, 2023-05..08) e explorar com DuckDB para
-  achar padrões/problemas e revisar glossário/eventos antes da revisão profunda. Custo zero de cluster.
-- **Dicionário de dados** (`docs/dicionario_dados.md`): schema + transformação por coluna, pedido da orientadora.
-- **🔎 Investigar PKs repetidas da Receita (B16) — prioridade após o 1º run.** Hoje a silver desempata de forma
-  arbitrária (`change_hash DESC`), o que pode esconder informação. Investigar, por tabela e por mês:
-  1. volume (`GROUP BY pk HAVING COUNT(*) > 1` na bronze) e se as mesmas PKs se repetem em todos os meses;
-  2. quais colunas divergem entre as versões (empresas: capital/porte? socios: qualificação/data de entrada?);
-  3. se é erro de publicação da Receita ou dado legítimo (ex.: sócio com dois papéis no mesmo CNPJ);
-  4. decidir a regra na silver (ex.: incluir qualificação na chave de socios, agregar papéis, ou manter o desempate)
-     e registrar em `decisions.md`; avaliar uma DQ informativa com a contagem por mês.
-- **Identidade de sócio PF**: medir colisões/mudanças (faixa etária, nome). Pré-requisito de grafo/grupos.
-- **Pseudonimização de nome palavra a palavra** (HMAC com chave secreta) — avaliar quando houver grafo.
-- **Grande setor** (D-10): achar fonte oficial ou trocar por seção CNAE.
-- **Backlog como pasta** (`docs/backlog/README.md` + um arquivo por item) quando crescer.
+| ID | O que | Onde | Estado |
+|---|---|---|---|
+| C-05 | `socios.sql` não idempotente (versão inativa fantasma ao reexecutar). Tabela atual **não** está contaminada (medido: 0) | critica §4.2, T5 | ⬜ |
+| C-06 | `socios.sql`: bronze vazia fecha todos os vínculos (assert dentro de `GROUP BY`) | critica §4.2, T5 | ⬜ |
+| C-01 | Sobrevivência: morte pela data real, censura no último snapshot | spec §2.4, T4 | ⬜ |
+| C-09 | Bronze descarta sócio sem documento/nome em silêncio; falta reconciliação landing = bronze | critica §4.3 | ⬜ |
+| B17 | Bronze lenta: 3 shuffles completos por mês | backlog_historico | ⬜ |
+| B20 | SCD2 leem a bronze 2×; log lê cada SCD2 4–5× | backlog_historico, critica §6 | ⬜ (log: T1) |
+| C-21 | Timeout de 4 h e cluster 1–4 não comportam a janela completa; rodar em blocos | critica §4.3 | ⬜ |
+| C-19 | `change_hash` depende da ordem das colunas da landing; fixar `colunas_hash` | critica §4.2 | ⬜ |
+| C-18 | Sócio com nome corrigido = `pk` nova → saída sem entrada (com T1 a entrada passa a ser detectada) | critica §4.2 | ⬜ medir |
+| B16 | PKs repetidas na Receita (6/mês em sócios, 2–3 em empresas): entender e decidir a regra | backlog_historico | ⬜ |
+| C-11 | `dim_mudanca_estado` com listas de CNAE na chave (cardinalidade alta) | critica §4.1 | ⬜ (parcial em T1/T3) |
+| C-24 | `gerar_job.py` não detecta `.sql` novo; branch e bucket fixos no gerador | critica §4.3 | ⬜ |
+| C-10 | DQ: entidade corrente ausente do último snapshot (hoje: 0) | critica §3.5 | ⬜ |
 
-## Roadmap (do contexto histórico, ainda válido)
+## P2 — qualidade e limpeza
 
-1. ~~Concluir backfill landing 2023-05..2023-08~~ — feito pelo usuário (todas as tabelas no S3, 2026-11). Não existe 2023-04 (1º mês da RFB = 2023-05) → ver B9.
-1b. **Revisão/refatoração/caça a bugs** de bronze, silver e gold antes de rodar (via specs em `docs/specs/features/`).
-1c. **Job Databricks** em workspace clássico com job cluster barato (spot, autoterminação) — serverless saiu caro.
-    Por ora o usuário cria o Job **manualmente**; entregar código + definição (JSON/YAML do Job) para copiar. CLI só depois de definir limites de custo.
-    Janela completa: 2023-05 até o mês mais recente disponível. Dashboard: primeiro no Databricks (AI/BI); publicação externa a avaliar.
-2. Reingerir bronze → 4 SCD2 → `log_eventos_negocio` → silver final (dims → ponte → fato) → validações.
-3. Primeira execução real em cluster das camadas silver (nunca executadas).
-4. Gold / dashboard v2: corrigir B3, revisar datasets.
-5. Futuro: ingestão BCB, grafo de QSA (conceito), modelo de falência (experimento fora do repo: CatBoost, Niterói, PR-AUC ~0,42).
+| ID | O que | Estado |
+|---|---|---|
+| C-14 | Features de ML com estado de fim de mês (vazamento); criar colunas `*_inicio_mes` | ⬜ (parcial em T4) |
+| C-17 | `EMPRESA NASCEU` por join de todas as versões | ⬜ (T1) |
+| C-15 | Rótulos de "desconhecido" divergentes entre dim e gold | ⬜ |
+| C-20 | DQ da bronze concorrendo em `dq_metrics_log` | ✅ 2026-11-14 (append-only) |
+| C-22 | Argumento digitado errado virava "mês anterior" | ✅ 2026-11-14 |
+| C-23 / B6 | Máscara MEI sem teste vivo; pytest quebrado | ✅ 2026-11-14 (10 testes; falta `poetry lock`) |
+| B8 | Volumetria engolia erro de leitura | ✅ 2026-11-14 |
+| — | `ruff check` acusa 105 erros (79 automáticos); ligar no CI depois de limpar | ⬜ |
+| — | Docs desatualizados em relação ao run de 2026-11-08 (tabela em critica §2.1) | ⬜ |
+| — | Seed BCB (Selic/IPCA) fixo até 2025-12 → ingerir da API | ⬜ |
+| — | Apagar sem uso: `vw_dashboard_eventos_cnae.sql`, `ds_visao_macro.sql`, `ds_micro_*.sql`, `bronze/configs/cnaes.py`, `config/*.yaml`, `.claude/context_from_other_llm.md`, `checkpoint_estado.json`, `last_processed_month.txt`, notebooks quebrados | ⬜ |
+| — | `README.md` da raiz vazio | ⬜ |
+| — | Landing: mês publicado pela metade é aceito e congelado; guardar data de extração dos ZIPs | ⬜ |
+| — | Dicionário de dados (pedido da orientadora): gerar a partir dos `COMMENT` das DDLs | ⬜ |
+
+## Ideias (sem compromisso)
+
+- Identidade de sócio PF: medir colisões e mudanças de nome antes de grafo/grupos.
+- Pseudonimização de nome palavra a palavra (HMAC com chave fora do repo).
+- "Grande setor" (D-10): fonte citável ou trocar por seção CNAE.
+- Grafo de QSA e modelo de falência: depois da primeira entrega (ver `mineracao_receita.md`).
+
+## Medições de referência (2026-11-14, base de 4 meses)
+
+| O que | Valor |
+|---|---|
+| Matrizes ativas (mai → ago/2023) | 22,29 mi → 22,93 mi |
+| Matrizes novas por mês (jun/jul/ago) | 303 mil / 314 mil / 397 mil |
+| Parcela das empresas iniciadas em M que só aparece no snapshot M+1 | ~70% |
+| ATIVA → BAIXADA por mês | 155 mil / 136 mil / 165 mil |
+| Reativações em 3 meses | ~111 mil |
+| Baixas com motivo de falência (05) em 3 meses | ~430 |
+| Eventos de estado cadastral: matriz × filial | 639.841 × 22.108 |
+| Sócios com primeira versão inativa · estabelecimentos correntes fora do último snapshot | 0 · 0 |
+| Linhas do fato de eventos sem empresa / sem CNPJ | 0 / 0 |
+| Municípios com mais de um nome por código IBGE | 0 |
