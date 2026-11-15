@@ -25,7 +25,7 @@
 | Caixa de texto não mostra número calculado | a história vai em contadores e títulos; texto fixo só explica como ler |
 | Comparação nativa do contador (Value × Comparison) não tem sintaxe JSON documentada | **não usada**: a variação vem como contador próprio "Δ vs. mês anterior" = `SUM` de uma coluna `valor(M) − valor(M−1)` (linear, então respeita qualquer filtro) |
 | Filtro de campo filtra linhas do dataset antes da agregação do widget | contador de "último mês" = `SUM` de coluna que só vale no último mês (0 nos outros) |
-| Proporção não é soma: `SUM(a)/SUM(b)` no widget não tem sintaxe confirmada em JSON exportado | percentuais = `AVG` de um indicador 0/100 em dataset **uma linha por empresa** (AVG é agregação comum e respeita filtros); única exceção é "aberturas por baixa" (ver risco) |
+| Expressão composta no campo do widget (`SUM(a)/SUM(b)`, `try_divide`) é avaliada errado ou não desenha (testado na prévia) | percentuais = `AVG` de um indicador 0/100 em dataset **uma linha por empresa** (AVG respeita filtros); "aberturas por baixa" vem pronta do SQL (Brasil, não reage a filtro) |
 | Mediana | `PERCENTILE(col, 0.5)` (visto em dashboard exportado pela própria Databricks) sobre dataset uma linha por baixa |
 | Taxa por 1.000 ativas por grupo | precisa de razão de somas → vem pronta do dataset (Brasil por grupo); por isso só reage aos filtros que existem no dataset |
 
@@ -82,7 +82,7 @@ Grade de 12 colunas. "Filtros" = filtros de campo da página e os datasets que e
 | `c_aberturas` / `_d` | contador | `aberturas_ultimo_mes` / `aberturas_delta` | Aberturas no último mês / Δ |
 | `c_baixas` / `_d` | contador | `baixas_ultimo_mes` / `baixas_delta` | Baixas no último mês / Δ |
 | `c_saldo` / `_d` | contador | `saldo_ultimo_mes` / `saldo_delta` | Saldo do estoque no último mês / Δ |
-| `c_ab_por_baixa` | contador | `try_divide(SUM(aberturas_ultimo_mes), SUM(baixas_ultimo_mes))` | Aberturas por baixa no último mês |
+| `c_ab_por_baixa` / `_ant` | contador | `aberturas_por_baixa` · razão calculada em SQL (Brasil) | Aberturas por baixa no último mês / no anterior (Brasil, não muda com os filtros) |
 | `l_estoque` | linha | `estoque_mes` · `SUM(estoque_final_ativas)` | O estoque de empresas ativas cresce mês a mês? |
 | `l_entradas_saidas` | linha | `painel` · entradas, saídas, aberturas, baixas | Entram mais empresas no estoque do que saem? |
 
@@ -213,6 +213,14 @@ passa a recusar `try_divide` e vírgula em nome de campo. Página temporária "T
 simples, C razão em SQL + `SUM` (Brasil), D razão em SQL sem agregação (Brasil). (B) a pilha por porte saiu
 invertida: no Lakeview o primeiro valor de `custom-order` vai para o topo; `ORDEM_PORTE` agora vai do menor para o
 maior (MEI na base).
+
+**2026-11-15 — resultado da página de teste e fechamento:** A (`SUM(a) / SUM(b)` no widget) mostrou 4,06 mil =
+só `SUM(aberturas)`: **o Lakeview avalia errado, em silêncio, expressão composta no campo do widget**; B
+(`try_divide`) não desenha; C e D (razão calculada em SQL) mostram 2,22. Decisão: `c1_ab_por_baixa` e
+`c1_ab_por_baixa_ant` leem o dataset `aberturas_por_baixa` (uma linha, Brasil, razão em SQL; título avisa que não
+muda com os filtros). `validar()` só aceita coluna pura, `DATE_TRUNC("MONTH", col)` ou UM agregado simples
+(`SUM`/`AVG`/`PERCENTILE(col, 0.5)`) sobre UMA coluna. Página de teste e flag removidas. Pilha por porte com MEI na
+base aprovada; dashboard v2 aprovado pelo autor. Prévia republicada com 6 páginas.
 
 **Para a base real:** nenhuma migração além da já prevista (`fato_empresa_mes` está no `DROP` de
 `src/jobs/migracoes/2026-11-14_semantica_eventos.sql`); nenhum arquivo SQL novo, Job inalterado.

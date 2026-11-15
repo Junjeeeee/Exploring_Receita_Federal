@@ -47,10 +47,11 @@ Mercado ativo: os três datasets usam o mesmo bairro normalizado (`BAIRRO`: nulo
 `mercado_bairros` tem grão bairro × CNAE (agregado) restrito aos 20 maiores bairros de cada município, então os
 quatro filtros valem para todos os widgets.
 
-Widgets de maior risco de formato (sintaxe não vista em JSON exportado pelo workspace):
-`c1_ab_por_baixa` e `c1_ab_por_baixa_ant` (`SUM(a) / SUM(b)`; a forma anterior com `try_divide` e nome `razao(a,b)` NÃO desenhou — ver página "Teste (apagar)" da prévia, gerada com `--com-pagina-teste --saida <arquivo>` e publicada com `publicar_dashboard_amostra.py --arquivo <arquivo>`). `c4_idade` usa `PERCENTILE(col, 0.5)`; a ordem das séries de cor de `b2_porte` (`custom-order` no encoding de cor) e qual ponta vai na base da pilha,
-forma vista num dashboard exportado pela Databricks. Se um deles quebrar, reconfigurar pela UI e trazer o JSON
-regravado para o gerador.
+**Limitação do Lakeview (testada na prévia):** expressão composta no campo do widget é avaliada errado em
+silêncio (`SUM(a) / SUM(b)` mostrou só `SUM(a)`) ou não desenha (`try_divide`). Toda conta entre agregados fica no
+SQL do dataset; `validar()` só aceita coluna pura, `DATE_TRUNC("MONTH", col)` ou um agregado simples
+(`SUM`, `AVG`, `PERCENTILE(col, 0.5)`) sobre uma coluna. Por isso "aberturas por baixa" (`c1_ab_por_baixa`,
+`c1_ab_por_baixa_ant`) vem do dataset `aberturas_por_baixa` (uma linha, Brasil) e não reage aos filtros.
 
 ## Regras de leitura
 - Fluxos por **mês de detecção** no snapshot (extração ~dia 10); empresa = matriz do CNPJ raiz; 2023-05 é baseline
