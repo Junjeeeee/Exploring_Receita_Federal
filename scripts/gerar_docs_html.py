@@ -34,6 +34,9 @@ GRUPOS = [
 ORDEM = ["CLAUDE.md", "docs/architecture.md", "docs/backlog.md", "docs/critica.md",
          "docs/specs/landing.md", "docs/specs/bronze.md", "docs/specs/silver_intermediate.md",
          "docs/specs/silver_final.md", "docs/specs/gold.md", "docs/specs/_template.md",
+         # features que explicam o dashboard atual ficam no topo do grupo; as demais seguem por data
+         "docs/specs/features/2026-11-14-dashboard-v2-narrativa.md",
+         "docs/specs/features/2026-11-14-semantica-eventos-e-fluxos.md",
          "docs/decisions.md", "docs/glossario.md", "docs/tcc.md", "docs/mineracao_receita.md"]
 
 

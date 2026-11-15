@@ -263,6 +263,13 @@ function renderInicio() {
     return `<${tag} class="camada" style="--cor: var(${c.cor})"${d ? ` href="#${d.slug}"` : ""}>
       <span class="nome">${c.nome}</span><span class="faz">${c.faz}</span><span class="onde">${c.onde}</span></${tag}>`;
   }).join("");
+  // Caminho de leitura para quem chega agora (só os documentos que existem).
+  const roteiro = ["docs/architecture.md", "docs/glossario.md",
+    "docs/specs/features/2026-11-14-semantica-eventos-e-fluxos.md",
+    "docs/specs/features/2026-11-14-dashboard-v2-narrativa.md", "docs/backlog.md", "docs/critica.md"]
+    .map(c => porCaminho.get(c)).filter(Boolean)
+    .map((d, i) => `<a class="cartao" href="#${d.slug}"><b>${i + 1}. ${esc(d.titulo)}</b>${d.resumo ? `<span>${esc(d.resumo)}</span>` : ""}<code>${esc(d.caminho)}</code></a>`)
+    .join("");
   const grupos = DADOS.grupos.map(g => {
     const ds = DADOS.docs.filter(d => d.grupo === g);
     if (!ds.length) return "";
@@ -290,6 +297,13 @@ function renderInicio() {
         <p>Empresas, sócios e Simples usam só a raiz; estabelecimentos usam o número completo. Por isso as tabelas
         se juntam por <code>cnpj_basico</code>, nunca extraindo o CNPJ de <code>pk</code>.</p>
       </div>
+    </section>
+
+    <section class="secao">
+      <h2>Por onde começar</h2>
+      <p>Uma ordem de leitura para entender o projeto: como os dados fluem, o vocabulário, o que conta como evento,
+      o que o dashboard mostra, o que está aberto e o que a revisão crítica encontrou.</p>
+      <div class="cartoes">${roteiro}</div>
     </section>
 
     <section class="secao">
