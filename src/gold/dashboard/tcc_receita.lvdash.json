@@ -58,7 +58,7 @@
     },
     {
       "name": "estoque_mes",
-      "displayName": "Estoque de ativas no fim de cada mês",
+      "displayName": "Empresas ativas no fim de cada mês",
       "queryLines": [
         "SELECT mes_referencia, data_referencia, uf, porte_empresa, grande_area_cnae,\n",
         "       SUM(estoque_final_ativas) AS estoque_final_ativas\n",
@@ -287,25 +287,33 @@
       "name": "mercado",
       "displayName": "Mercado ativo (sem identificação)",
       "queryLines": [
-        "SELECT uf, municipio, bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas\n",
+        "SELECT uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas\n",
         "FROM tcc_receita.gold.dashboard_mercado_ativo\n",
         "GROUP BY ALL\n"
       ]
     },
     {
       "name": "mercado_bairros",
-      "displayName": "Mercado ativo: 20 maiores bairros por município",
+      "displayName": "Mercado ativo: 20 maiores bairros por município, por CNAE",
       "queryLines": [
-        "SELECT uf, municipio, bairro, empresas_ativas\n",
-        "FROM (\n",
+        "WITH por_bairro_cnae AS (\n",
+        "    SELECT uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, nome_cnae, COUNT(*) AS empresas_ativas\n",
+        "    FROM tcc_receita.gold.dashboard_mercado_ativo\n",
+        "    GROUP BY ALL\n",
+        "),\n",
+        "ranking_bairros AS (\n",
+        "    -- Posição do bairro no município pelo total de ativas (todos os CNAEs).\n",
         "    SELECT\n",
         "        uf, municipio, bairro,\n",
-        "        COUNT(*) AS empresas_ativas,\n",
-        "        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY COUNT(*) DESC) AS posicao\n",
-        "    FROM tcc_receita.gold.dashboard_mercado_ativo\n",
+        "        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY SUM(empresas_ativas) DESC, bairro) AS posicao\n",
+        "    FROM por_bairro_cnae\n",
         "    GROUP BY uf, municipio, bairro\n",
         ")\n",
-        "WHERE posicao <= 20\n"
+        "SELECT c.uf, c.municipio, c.bairro, c.nome_cnae, c.empresas_ativas\n",
+        "FROM por_bairro_cnae c\n",
+        "JOIN ranking_bairros r\n",
+        "  ON r.uf = c.uf AND r.municipio = c.municipio AND r.bairro = c.bairro\n",
+        "WHERE r.posicao <= 20\n"
       ]
     },
     {
@@ -313,7 +321,7 @@
       "displayName": "Maiores empresas ativas (razão social liberada)",
       "queryLines": [
         "SELECT razao_social, nome_fantasia, porte_empresa, capital_social, data_inicio_atividade,\n",
-        "       uf, municipio, bairro, grande_area_cnae, nome_cnae\n",
+        "       uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, grande_area_cnae, nome_cnae\n",
         "FROM tcc_receita.gold.dashboard_mercado_ativo\n",
         "WHERE exibir_razao_social\n",
         "ORDER BY capital_social DESC\n",
@@ -340,8 +348,8 @@
             "name": "p1_texto",
             "multilineTextboxSpec": {
               "lines": [
-                "## O estoque de empresas está crescendo?\n",
-                "Contadores: **último mês carregado** (ver ao lado) e, embaixo, a diferença para o mês anterior. Empresa = matriz do CNPJ; mês = mês em que o snapshot da Receita detectou o fato. Saldo = entradas − saídas do estoque de ativas.\n"
+                "## O número de empresas ativas está crescendo?\n",
+                "Os números grandes são do **último mês disponível** (indicado ao lado); embaixo de cada um, a variação em relação ao mês anterior. Empresa = matriz do CNPJ. Cada mudança é contada no mês em que apareceu pela primeira vez no cadastro mensal da Receita.\n"
               ]
             }
           },
@@ -561,24 +569,24 @@
                 "fields": [
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f1_area_resumo_mes"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f1_area_estoque_mes"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f1_area_painel"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Grande área (provisório)"
+                "title": "Setor (grande área)"
               }
             }
           },
@@ -628,7 +636,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Mês dos contadores"
+                "title": "Mês dos números"
               }
             }
           },
@@ -783,12 +791,14 @@
               "encodings": {
                 "value": {
                   "fieldName": "sum(saldo_ultimo_mes)",
-                  "displayName": "Saldo do estoque no último mês"
+                  "displayName": "Crescimento líquido no último mês"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Saldo do estoque no último mês"
+                "title": "Crescimento líquido no último mês",
+                "showDescription": true,
+                "description": "Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -865,14 +875,14 @@
               "encodings": {
                 "value": {
                   "fieldName": "sum(ativas_delta)",
-                  "displayName": "Δ vs. mês anterior"
+                  "displayName": "Variação em relação ao mês anterior"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Δ vs. mês anterior",
+                "title": "Variação em relação ao mês anterior",
                 "showDescription": true,
-                "description": "No Brasil é igual ao saldo (o estoque fecha com os fluxos). Com filtro pode diferir: empresas que mudam de UF, porte ou setor trocam de grupo."
+                "description": "Sem filtro, é igual ao crescimento líquido do mês. Com filtro pode diferir um pouco: empresas que mudam de UF, porte ou setor trocam de grupo."
               }
             }
           },
@@ -907,12 +917,12 @@
               "encodings": {
                 "value": {
                   "fieldName": "sum(aberturas_delta)",
-                  "displayName": "Δ vs. mês anterior"
+                  "displayName": "Variação em relação ao mês anterior"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Δ vs. mês anterior"
+                "title": "Variação em relação ao mês anterior"
               }
             }
           },
@@ -947,12 +957,12 @@
               "encodings": {
                 "value": {
                   "fieldName": "sum(baixas_delta)",
-                  "displayName": "Δ vs. mês anterior"
+                  "displayName": "Variação em relação ao mês anterior"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Δ vs. mês anterior"
+                "title": "Variação em relação ao mês anterior"
               }
             }
           },
@@ -987,12 +997,12 @@
               "encodings": {
                 "value": {
                   "fieldName": "sum(saldo_delta)",
-                  "displayName": "Δ vs. mês anterior"
+                  "displayName": "Variação em relação ao mês anterior"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Δ vs. mês anterior"
+                "title": "Variação em relação ao mês anterior"
               }
             }
           },
@@ -1027,12 +1037,12 @@
               "encodings": {
                 "value": {
                   "fieldName": "razao(aberturas_mes_anterior,baixas_mes_anterior)",
-                  "displayName": "No mês anterior"
+                  "displayName": "Aberturas por baixa no mês anterior"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "No mês anterior"
+                "title": "Aberturas por baixa no mês anterior"
               }
             }
           },
@@ -1090,9 +1100,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "O estoque de empresas ativas cresce mês a mês?",
+                "title": "O número de empresas ativas cresce mês a mês?",
                 "showDescription": true,
-                "description": "Matrizes ativas no fim de cada mês. 2023-05 é o ponto de partida (carga inicial)."
+                "description": "Matrizes ativas no fim de cada mês. Maio/2023 é o ponto de partida (primeira carga)."
               }
             }
           },
@@ -1147,20 +1157,20 @@
                   "fields": [
                     {
                       "fieldName": "sum(qtd_entradas_estoque)",
-                      "displayName": "Entradas (aberturas + reativações)"
+                      "displayName": "Passaram a estar ativas (aberturas e reativações)"
                     },
                     {
                       "fieldName": "sum(qtd_saidas_estoque)",
-                      "displayName": "Saídas (baixas, inaptidões, suspensões)"
+                      "displayName": "Deixaram de estar ativas (baixas, inaptidões, suspensões)"
                     }
                   ]
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Entram mais empresas no estoque do que saem?",
+                "title": "Mais empresas passam a estar ativas do que deixam de estar?",
                 "showDescription": true,
-                "description": "Fluxos do estoque de ativas por mês de detecção. A distância entre as linhas é o saldo."
+                "description": "Por mês em que a mudança apareceu no cadastro. A distância entre as linhas é o crescimento líquido do mês."
               }
             }
           },
@@ -1185,7 +1195,7 @@
             "multilineTextboxSpec": {
               "lines": [
                 "## Quem abre e quem fecha?\n",
-                "Porte e setor das empresas que abrem e fecham. Os percentuais somam o período inteiro de fluxo; as taxas são por 1.000 empresas ativas no início do mês (Brasil, não reagem aos filtros).\n"
+                "Porte e setor das empresas que abrem e fecham. Os percentuais cobrem todo o período com movimentação (jun–ago/2023). As taxas são por 1.000 empresas ativas no início do mês e valem para o Brasil (não mudam com os filtros).\n"
               ]
             }
           },
@@ -1264,14 +1274,14 @@
                 "fields": [
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f2_area_fluxos_empresa"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Grande área (provisório)"
+                "title": "Setor (grande área)"
               }
             }
           },
@@ -1353,7 +1363,7 @@
                 "showTitle": true,
                 "title": "% das baixas que são MEI",
                 "showDescription": true,
-                "description": "Para quem saiu de ATIVA, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."
+                "description": "Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."
               }
             }
           },
@@ -1397,23 +1407,23 @@
                 "columns": [
                   {
                     "fieldName": "posicao",
-                    "displayName": ""
+                    "displayName": "Posição"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área"
+                    "displayName": "Setor"
                   },
                   {
                     "fieldName": "taxa_saldo_por_mil",
-                    "displayName": "Saldo por 1.000 ativas/mês"
+                    "displayName": "Crescimento líquido por 1.000 ativas (por mês)"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Setor que mais cresce e que menos cresce",
+                "title": "Setor que mais cresce e setor que menos cresce",
                 "showDescription": true,
-                "description": "Brasil; só áreas com CNAE conhecido e média ≥ 100 ativas."
+                "description": "Brasil; só setores com CNAE conhecido e média ≥ 100 ativas. Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -1457,9 +1467,12 @@
                 "x": {
                   "fieldName": "fluxo",
                   "scale": {
-                    "type": "categorical"
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
                   },
-                  "displayName": "Fluxo"
+                  "displayName": ""
                 },
                 "y": {
                   "fieldName": "sum(qtd)",
@@ -1471,7 +1484,18 @@
                 "color": {
                   "fieldName": "porte_empresa",
                   "scale": {
-                    "type": "categorical"
+                    "type": "categorical",
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "MEI",
+                        "ME",
+                        "DEMAIS",
+                        "EPP",
+                        "NAO INFORMADO",
+                        "NAO IDENTIFICADO"
+                      ]
+                    }
                   },
                   "displayName": "Porte"
                 }
@@ -1480,7 +1504,7 @@
                 "showTitle": true,
                 "title": "O MEI domina tanto as aberturas quanto as baixas?",
                 "showDescription": true,
-                "description": "Composição por porte das aberturas e das baixas no período."
+                "description": "Aberturas e baixas do período, divididas por porte (o maior porte na base da barra)."
               }
             }
           },
@@ -1522,7 +1546,7 @@
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Saldo por mil"
+                  "displayName": "Crescimento líquido por 1.000 ativas"
                 },
                 "y": {
                   "fieldName": "grande_area_cnae",
@@ -1532,14 +1556,14 @@
                       "by": "x-reversed"
                     }
                   },
-                  "displayName": "Grande área"
+                  "displayName": "Setor"
                 }
               },
               "frame": {
                 "showTitle": true,
                 "title": "Quais setores crescem mais, em proporção ao seu tamanho?",
                 "showDescription": true,
-                "description": "(Entradas − saídas) ÷ ativas no início do mês, média mensal. Brasil."
+                "description": "Média mensal, Brasil. Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -1581,7 +1605,7 @@
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Baixas por mil"
+                  "displayName": "Baixas por 1.000 ativas"
                 },
                 "y": {
                   "fieldName": "grande_area_cnae",
@@ -1591,14 +1615,14 @@
                       "by": "x-reversed"
                     }
                   },
-                  "displayName": "Grande área"
+                  "displayName": "Setor"
                 }
               },
               "frame": {
                 "showTitle": true,
                 "title": "Em quais setores as empresas fecham mais?",
                 "showDescription": true,
-                "description": "Baixas de empresas ativas ÷ ativas no início do mês, média mensal. Brasil."
+                "description": "Baixas de empresas que estavam ativas, para cada 1.000 ativas no início do mês (média mensal). Brasil."
               }
             }
           },
@@ -1650,11 +1674,11 @@
                 "columns": [
                   {
                     "fieldName": "nome_cnae",
-                    "displayName": "CNAE principal"
+                    "displayName": "Atividade (CNAE principal)"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área"
+                    "displayName": "Setor"
                   },
                   {
                     "fieldName": "aberturas",
@@ -1666,7 +1690,7 @@
                   },
                   {
                     "fieldName": "saldo",
-                    "displayName": "Saldo"
+                    "displayName": "Crescimento líquido"
                   }
                 ]
               },
@@ -1674,7 +1698,7 @@
                 "showTitle": true,
                 "title": "Quais atividades concentram as aberturas?",
                 "showDescription": true,
-                "description": "20 CNAEs com mais aberturas no período. Brasil."
+                "description": "As 20 atividades com mais aberturas no período. Brasil. Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -1698,8 +1722,8 @@
             "name": "p3_texto",
             "multilineTextboxSpec": {
               "lines": [
-                "## Onde o número de empresas cresce mais?\n",
-                "Ranking por **taxa** (por 1.000 ativas no início do mês, média mensal), não por volume: SP sempre lideraria em volume. UFs com média < 100 ativas, UF não identificada e exterior ficam fora. Brasil inteiro: esta página não tem filtros.\n"
+                "## Onde o número de empresas ativas cresce mais?\n",
+                "Comparação por **taxa** — crescimento líquido para cada 1.000 empresas ativas no início do mês, média mensal — e não por número absoluto (em número absoluto, SP sempre lideraria). Ficam fora UFs com média menor que 100 ativas, UF não identificada e exterior. Brasil inteiro: esta página não tem filtros.\n"
               ]
             }
           },
@@ -1743,7 +1767,7 @@
                 "columns": [
                   {
                     "fieldName": "posicao",
-                    "displayName": ""
+                    "displayName": "Posição"
                   },
                   {
                     "fieldName": "uf",
@@ -1751,13 +1775,15 @@
                   },
                   {
                     "fieldName": "taxa_crescimento_por_mil",
-                    "displayName": "Saldo por 1.000 ativas/mês"
+                    "displayName": "Crescimento líquido por 1.000 ativas (por mês)"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "UF com maior e com menor crescimento líquido"
+                "title": "UF que mais cresce e UF que menos cresce",
+                "showDescription": true,
+                "description": "Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -1813,27 +1839,27 @@
                   },
                   {
                     "fieldName": "taxa_abertura_por_mil",
-                    "displayName": "Aberturas por mil"
+                    "displayName": "Aberturas por 1.000 ativas"
                   },
                   {
                     "fieldName": "taxa_fechamento_por_mil",
-                    "displayName": "Baixas por mil"
+                    "displayName": "Baixas por 1.000 ativas"
                   },
                   {
                     "fieldName": "taxa_crescimento_por_mil",
-                    "displayName": "Saldo por mil"
+                    "displayName": "Crescimento líquido por 1.000 ativas"
                   },
                   {
                     "fieldName": "ativas_inicio_media_mensal",
-                    "displayName": "Ativas no início do mês (média)"
+                    "displayName": "Empresas ativas no início do mês (média)"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Abertura, fechamento e saldo por UF",
+                "title": "Aberturas, baixas e crescimento líquido por UF, para cada 1.000 ativas",
                 "showDescription": true,
-                "description": "Taxas mensais por 1.000 ativas no início do mês."
+                "description": "Taxas mensais (média do período)."
               }
             }
           },
@@ -1875,7 +1901,7 @@
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Saldo por mil"
+                  "displayName": "Crescimento líquido por 1.000 ativas"
                 },
                 "y": {
                   "fieldName": "uf",
@@ -1890,9 +1916,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Onde o estoque cresce mais, em proporção ao seu tamanho?",
+                "title": "Em quais UFs o número de empresas ativas cresce mais, em proporção ao tamanho?",
                 "showDescription": true,
-                "description": "(Entradas − saídas) ÷ ativas no início do mês, média mensal."
+                "description": "Média mensal. Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
               }
             }
           },
@@ -1917,7 +1943,7 @@
             "multilineTextboxSpec": {
               "lines": [
                 "## Por que e com que idade as empresas fecham?\n",
-                "Baixas de matriz no período, por categoria do **código de motivo** da Receita e pela idade na baixa (data real da baixa − início de atividade). Inaptidão e suspensão também tiram a empresa do estoque, mas são reversíveis: a reativação devolve.\n"
+                "Baixas de matrizes no período, pelo **motivo** registrado pela Receita e pela idade da empresa na baixa (data da baixa − data de início de atividade). Inaptidão e suspensão também tiram a empresa da lista de ativas, mas podem ser revertidas: a reativação a traz de volta.\n"
               ]
             }
           },
@@ -2235,34 +2261,34 @@
                 "fields": [
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f4_area_fluxos_empresa"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f4_area_baixas_idade"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f4_area_baixas_motivo"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f4_area_painel"
                   },
                   {
                     "fieldName": "grande_area_cnae",
-                    "displayName": "Grande área (provisório)",
+                    "displayName": "Setor (grande área)",
                     "queryName": "filtro_f4_area_eventos"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Grande área (provisório)"
+                "title": "Setor (grande área)"
               }
             }
           },
@@ -2304,7 +2330,7 @@
                 "showTitle": true,
                 "title": "% das baixas por falência ou liquidação judicial",
                 "showDescription": true,
-                "description": "Motivos 05, 06 e 10 da Receita."
+                "description": "Motivos 05, 06 e 10 da tabela de motivos da Receita."
               }
             }
           },
@@ -2344,7 +2370,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Idade mediana na baixa (anos)"
+                "title": "Idade mediana na baixa (anos)",
+                "showDescription": true,
+                "description": "Metade das empresas baixadas tinha menos que esta idade."
               }
             }
           },
@@ -2426,7 +2454,7 @@
                 "showTitle": true,
                 "title": "Reativações no período",
                 "showDescription": true,
-                "description": "Matrizes que voltaram a ATIVA (de INAPTA, SUSPENSA ou BAIXADA)."
+                "description": "Matrizes que voltaram a ser ativas (estavam inaptas, suspensas ou baixadas)."
               }
             }
           },
@@ -2478,14 +2506,14 @@
                       "by": "x-reversed"
                     }
                   },
-                  "displayName": "Categoria do motivo"
+                  "displayName": "Motivo da baixa"
                 }
               },
               "frame": {
                 "showTitle": true,
                 "title": "Falência é rara: por que as empresas são baixadas?",
                 "showDescription": true,
-                "description": "Categoria pelo código de motivo da Receita (spec de semântica § 2.3)."
+                "description": "Motivo agrupado pelo código que a Receita registra na baixa (ver 'Sobre os dados')."
               }
             }
           },
@@ -2525,7 +2553,18 @@
                 "x": {
                   "fieldName": "faixa_idade_baixa",
                   "scale": {
-                    "type": "categorical"
+                    "type": "categorical",
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "00-01 ano",
+                        "01-02 anos",
+                        "02-05 anos",
+                        "05-10 anos",
+                        "10+ anos",
+                        "sem data"
+                      ]
+                    }
                   },
                   "displayName": "Idade na baixa"
                 },
@@ -2541,7 +2580,7 @@
                 "showTitle": true,
                 "title": "Com que idade as empresas fecham?",
                 "showDescription": true,
-                "description": "'sem data': início de atividade ou data da baixa ausente, ou baixa antes do início."
+                "description": "Faixas em ordem de idade. 'sem data': falta a data de início ou a da baixa, ou a baixa é anterior ao início."
               }
             }
           },
@@ -2623,9 +2662,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Além da baixa: inaptidão, suspensão e reativação mês a mês",
+                "title": "Além das baixas: quantas empresas ficam inaptas, são suspensas ou voltam a ser ativas?",
                 "showDescription": true,
-                "description": "Matrizes por mês de detecção."
+                "description": "Matrizes, por mês em que a mudança apareceu no cadastro. Inaptidão: a Receita declara a empresa inapta (ex.: deixou de entregar declarações). Suspensão: o CNPJ é suspenso por irregularidade cadastral. Reativação: volta a ser ativa."
               }
             }
           },
@@ -2667,7 +2706,7 @@
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "Eventos"
+                  "displayName": "Mudanças registradas"
                 },
                 "y": {
                   "fieldName": "tipo_evento",
@@ -2677,14 +2716,14 @@
                       "by": "x-reversed"
                     }
                   },
-                  "displayName": "Tipo de evento"
+                  "displayName": "Tipo de mudança"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "O que mais muda no cadastro além da situação?",
+                "title": "O que mais muda no cadastro, além de abrir e fechar?",
                 "showDescription": true,
-                "description": "Todos os eventos do log, inclusive de filiais e de sócios. Aberturas não vêm daqui."
+                "description": "Todas as mudanças detectadas entre um mês e o seguinte, inclusive de filiais e de sócios. Aberturas não são contadas aqui."
               }
             }
           },
@@ -2709,7 +2748,7 @@
             "multilineTextboxSpec": {
               "lines": [
                 "## Quem são os concorrentes de uma empresa num lugar?\n",
-                "Matrizes ativas na versão mais recente. Escolha UF, município e CNAE para ver o tamanho do mercado local. Sem identificação de MEI nem de empresário individual (LGPD).\n"
+                "Matrizes ativas no último cadastro. Escolha UF, município, bairro e atividade (CNAE) para ver o tamanho do mercado local. Sem identificação de MEI nem de empresário individual (LGPD).\n"
               ]
             }
           },
@@ -2795,7 +2834,7 @@
           "position": {
             "x": 0,
             "y": 3,
-            "width": 4,
+            "width": 3,
             "height": 1
           }
         },
@@ -2872,9 +2911,88 @@
             }
           },
           "position": {
-            "x": 4,
+            "x": 3,
             "y": 3,
-            "width": 4,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f5_bairro",
+            "queries": [
+              {
+                "name": "filtro_f5_bairro_mercado",
+                "query": {
+                  "datasetName": "mercado",
+                  "fields": [
+                    {
+                      "name": "bairro",
+                      "expression": "`bairro`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f5_bairro_mercado_bairros",
+                "query": {
+                  "datasetName": "mercado_bairros",
+                  "fields": [
+                    {
+                      "name": "bairro",
+                      "expression": "`bairro`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f5_bairro_mercado_empresas",
+                "query": {
+                  "datasetName": "mercado_empresas",
+                  "fields": [
+                    {
+                      "name": "bairro",
+                      "expression": "`bairro`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "bairro",
+                    "displayName": "Bairro",
+                    "queryName": "filtro_f5_bairro_mercado"
+                  },
+                  {
+                    "fieldName": "bairro",
+                    "displayName": "Bairro",
+                    "queryName": "filtro_f5_bairro_mercado_bairros"
+                  },
+                  {
+                    "fieldName": "bairro",
+                    "displayName": "Bairro",
+                    "queryName": "filtro_f5_bairro_mercado_empresas"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Bairro"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 3,
             "height": 1
           }
         },
@@ -2886,6 +3004,19 @@
                 "name": "filtro_f5_cnae_mercado",
                 "query": {
                   "datasetName": "mercado",
+                  "fields": [
+                    {
+                      "name": "nome_cnae",
+                      "expression": "`nome_cnae`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "filtro_f5_cnae_mercado_bairros",
+                "query": {
+                  "datasetName": "mercado_bairros",
                   "fields": [
                     {
                       "name": "nome_cnae",
@@ -2916,26 +3047,31 @@
                 "fields": [
                   {
                     "fieldName": "nome_cnae",
-                    "displayName": "CNAE principal",
+                    "displayName": "Atividade (CNAE principal)",
                     "queryName": "filtro_f5_cnae_mercado"
                   },
                   {
                     "fieldName": "nome_cnae",
-                    "displayName": "CNAE principal",
+                    "displayName": "Atividade (CNAE principal)",
+                    "queryName": "filtro_f5_cnae_mercado_bairros"
+                  },
+                  {
+                    "fieldName": "nome_cnae",
+                    "displayName": "Atividade (CNAE principal)",
                     "queryName": "filtro_f5_cnae_mercado_empresas"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "CNAE principal"
+                "title": "Atividade (CNAE principal)"
               }
             }
           },
           "position": {
-            "x": 8,
+            "x": 9,
             "y": 3,
-            "width": 4,
+            "width": 3,
             "height": 1
           }
         },
@@ -3008,7 +3144,10 @@
                 "x": {
                   "fieldName": "porte_empresa",
                   "scale": {
-                    "type": "categorical"
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
                   },
                   "displayName": "Porte"
                 },
@@ -3022,7 +3161,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Ativas por porte"
+                "title": "Empresas ativas por porte"
               }
             }
           },
@@ -3079,9 +3218,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Ativas por bairro (20 maiores de cada município)",
+                "title": "Em quais bairros essas empresas estão? (20 maiores bairros do município)",
                 "showDescription": true,
-                "description": "Escolha um município. O filtro de CNAE não reage neste gráfico."
+                "description": "Os 20 bairros com mais empresas ativas de cada município (contando todas as atividades). Com filtro de atividade, as barras mostram só as empresas daquela atividade nesses bairros."
               }
             }
           },
@@ -3133,12 +3272,12 @@
                       "by": "x-reversed"
                     }
                   },
-                  "displayName": "Grande área"
+                  "displayName": "Setor"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Ativas por grande área"
+                "title": "Empresas ativas por setor"
               }
             }
           },
@@ -3230,7 +3369,7 @@
                   },
                   {
                     "fieldName": "nome_cnae",
-                    "displayName": "CNAE"
+                    "displayName": "Atividade"
                   }
                 ]
               },
@@ -3263,13 +3402,13 @@
             "multilineTextboxSpec": {
               "lines": [
                 "## Como ler estes números?\n",
-                "- **Dois relógios.** Todo fluxo é contado no **mês de detecção**: o primeiro snapshot mensal da Receita em que o fato aparece. O snapshot é extraído por volta do dia 10, então o mês M cobre, aproximadamente, de meados de M−1 a meados de M. A **data real** declarada pela Receita só é usada para idade e tempo até o evento (ex.: idade na baixa), nunca para somar fluxo do mês.\n",
-                "- **Empresa = matriz** do CNPJ raiz (8 dígitos). Eventos de filial ficam no log, mas não entram nos indicadores de empresa.\n",
-                "- **Estoque** = matrizes com situação ATIVA. Entradas = aberturas + reativações; saídas = baixas, inaptidões, suspensões e nulidades de empresas ativas. O estoque de cada mês fecha com os fluxos.\n",
-                "- **Categorias de baixa** vêm do código de motivo da Receita: falência/liquidação judicial = motivos 05, 06 e 10; óbito do MEI = 75; baixa voluntária = 01, 37, 54; de ofício = 13, 14, 15, 63, 64, 66, 71, 73.\n",
-                "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Rankings só incluem grupos com média ≥ 100 ativas.\n",
-                "- **Limites.** Só há três meses de fluxo (jun–ago/2023): 2023-05 é a carga inicial (baseline) e não tem evento nenhum. Grande área é um agrupamento provisório de CNAE. Nenhum CPF, nome de sócio ou razão social de MEI/empresário individual aparece no painel (LGPD).\n",
-                "- **Filtros** valem só na própria página. Taxas e rankings por setor/UF são do Brasil e não reagem a filtro.\n"
+                "- **Mês da mudança × data real.** Toda contagem mensal usa o mês em que a mudança apareceu pela primeira vez no cadastro mensal publicado pela Receita. Esse cadastro é extraído por volta do dia 10, então o mês M cobre, aproximadamente, de meados de M−1 a meados de M. A **data real** declarada pela Receita só é usada para calcular idade (ex.: idade na baixa), nunca para contar quantas mudanças houve no mês.\n",
+                "- **Empresa = matriz** do CNPJ (os 8 primeiros dígitos). Mudanças de filiais são registradas, mas não entram nos números de empresas.\n",
+                "- **Empresas ativas** = matrizes com situação cadastral ATIVA. **Passaram a estar ativas** = aberturas e reativações. **Deixaram de estar ativas** = baixas, inaptidões, suspensões e anulações de empresas que estavam ativas. **Crescimento líquido** = a diferença entre os dois; somado às ativas do mês anterior, dá exatamente as ativas do mês.\n",
+                "- **Motivos de baixa** vêm do código registrado pela Receita: falência/liquidação judicial = motivos 05, 06 e 10; óbito do MEI = 75; baixa voluntária = 01, 37, 54; de ofício = 13, 14, 15, 63, 64, 66, 71, 73.\n",
+                "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Comparações entre UFs e setores só incluem grupos com média de pelo menos 100 ativas.\n",
+                "- **Limites.** Só há três meses com movimentação (jun–ago/2023): maio/2023 é a primeira carga e serve só de ponto de partida. Setor (grande área) é um agrupamento provisório de CNAE. Nenhum CPF, nome de sócio ou razão social de MEI/empresário individual aparece no painel (LGPD).\n",
+                "- **Filtros** valem só na própria página. Taxas e comparações por setor/UF são do Brasil e não mudam com filtros.\n"
               ]
             }
           },
@@ -3328,16 +3467,16 @@
                     },
                     {
                       "fieldName": "sum(ipca_acumulado_12m_pct)",
-                      "displayName": "IPCA 12m"
+                      "displayName": "IPCA 12 meses"
                     }
                   ]
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Contexto macroeconômico no período: Selic e IPCA 12 meses (% a.a.)",
+                "title": "Contexto econômico do período: Selic e inflação em 12 meses (% ao ano)",
                 "showDescription": true,
-                "description": "Só contexto: três meses de fluxo não sustentam leitura de causa. Fonte: BCB."
+                "description": "Só contexto: três meses não permitem tirar conclusão de causa. Fonte: Banco Central."
               }
             }
           },

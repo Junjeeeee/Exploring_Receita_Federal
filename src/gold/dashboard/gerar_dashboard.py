@@ -28,6 +28,15 @@ FATO = "tcc_receita.gold.fato_empresa_mes"
 # começar em outro mês, o MIN passa a acompanhá-la.
 SEM_CARGA_INICIAL = f"mes_referencia > (SELECT MIN(mes_referencia) FROM {FATO})"
 
+# Bairro exibido no "Mercado ativo": nulo ou vazio vira rótulo explícito (não some do filtro nem das somas).
+BAIRRO = "COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO')"
+
+# Ordem das séries de cor por porte: maior volume primeiro (base da pilha e topo da legenda). Fixa porque a
+# hierarquia é estável (amostra jun–ago/2023: MEI > ME > DEMAIS > EPP, nas aberturas e nas baixas).
+ORDEM_PORTE = ["MEI", "ME", "DEMAIS", "EPP", "NAO INFORMADO", "NAO IDENTIFICADO"]
+# Faixas de idade: ordem natural (da mais nova para a mais velha), não por volume.
+ORDEM_FAIXA_IDADE = ["00-01 ano", "01-02 anos", "02-05 anos", "05-10 anos", "10+ anos", "sem data"]
+
 # Piso de volume dos rankings: grupo com média mensal de ativas no início do mês abaixo disso não é ranqueado
 # (taxa de grupo pequeno é ruído). Na base real todas as UFs e grandes áreas passam.
 PISO_ATIVAS = 100
@@ -135,7 +144,7 @@ SELECT
 FROM {PAINEL}
 """),
     # Estoque inclui o baseline: é o ponto de partida da série (só fluxo é que não existe nele).
-    "estoque_mes": ("Estoque de ativas no fim de cada mês", f"""
+    "estoque_mes": ("Empresas ativas no fim de cada mês", f"""
 SELECT mes_referencia, data_referencia, uf, porte_empresa, grande_area_cnae,
        SUM(estoque_final_ativas) AS estoque_final_ativas
 FROM {PAINEL}
@@ -248,30 +257,41 @@ LIMIT 20
 """),
 
     # --- página 5: mercado ativo -------------------------------------------------------------------
+    # Os três datasets da página usam o MESMO bairro normalizado (constante BAIRRO), para o filtro de bairro casar.
     # Sem razão social: MEI costuma ter nome de pessoa física na razão social.
-    "mercado": ("Mercado ativo (sem identificação)", """
-SELECT uf, municipio, bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas
+    "mercado": ("Mercado ativo (sem identificação)", f"""
+SELECT uf, municipio, {BAIRRO} AS bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas
 FROM tcc_receita.gold.dashboard_mercado_ativo
 GROUP BY ALL
 """),
-    # 20 maiores bairros de cada município (o widget não tem top-N). Sem CNAE: o filtro de CNAE não vale aqui.
-    "mercado_bairros": ("Mercado ativo: 20 maiores bairros por município", """
-SELECT uf, municipio, bairro, empresas_ativas
-FROM (
+    # Grão bairro × CNAE (agregado: nunca uma linha por empresa), restrito aos 20 bairros com mais empresas
+    # ativas de cada município (o widget não tem top-N). Como o grão tem CNAE e bairro, os quatro filtros da
+    # página valem aqui; com filtro de CNAE, as barras mostram só as empresas daquele CNAE nesses 20 bairros.
+    "mercado_bairros": ("Mercado ativo: 20 maiores bairros por município, por CNAE", f"""
+WITH por_bairro_cnae AS (
+    SELECT uf, municipio, {BAIRRO} AS bairro, nome_cnae, COUNT(*) AS empresas_ativas
+    FROM tcc_receita.gold.dashboard_mercado_ativo
+    GROUP BY ALL
+),
+ranking_bairros AS (
+    -- Posição do bairro no município pelo total de ativas (todos os CNAEs).
     SELECT
         uf, municipio, bairro,
-        COUNT(*) AS empresas_ativas,
-        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY COUNT(*) DESC) AS posicao
-    FROM tcc_receita.gold.dashboard_mercado_ativo
+        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY SUM(empresas_ativas) DESC, bairro) AS posicao
+    FROM por_bairro_cnae
     GROUP BY uf, municipio, bairro
 )
-WHERE posicao <= 20
+SELECT c.uf, c.municipio, c.bairro, c.nome_cnae, c.empresas_ativas
+FROM por_bairro_cnae c
+JOIN ranking_bairros r
+  ON r.uf = c.uf AND r.municipio = c.municipio AND r.bairro = c.bairro
+WHERE r.posicao <= 20
 """),
     # LGPD: `exibir_razao_social` (gold) é FALSE para MEI, empresário individual (2135) e razão social com
     # 11 dígitos seguidos. Sem endereço além de município/bairro. LIMIT: não devolver milhões de linhas.
-    "mercado_empresas": ("Maiores empresas ativas (razão social liberada)", """
+    "mercado_empresas": ("Maiores empresas ativas (razão social liberada)", f"""
 SELECT razao_social, nome_fantasia, porte_empresa, capital_social, data_inicio_atividade,
-       uf, municipio, bairro, grande_area_cnae, nome_cnae
+       uf, municipio, {BAIRRO} AS bairro, grande_area_cnae, nome_cnae
 FROM tcc_receita.gold.dashboard_mercado_ativo
 WHERE exibir_razao_social
 ORDER BY capital_social DESC
@@ -315,7 +335,7 @@ COLUNAS = {
     "top_cnaes": ["nome_cnae", "grande_area_cnae", "aberturas", "baixas", "saldo"],
     "mercado": ["uf", "municipio", "bairro", "porte_empresa", "grande_area_cnae", "nome_cnae",
                 "empresas_ativas"],
-    "mercado_bairros": ["uf", "municipio", "bairro", "empresas_ativas"],
+    "mercado_bairros": ["uf", "municipio", "bairro", "nome_cnae", "empresas_ativas"],
     "mercado_empresas": ["razao_social", "nome_fantasia", "porte_empresa", "capital_social",
                          "data_inicio_atividade", "uf", "municipio", "bairro", "grande_area_cnae", "nome_cnae"],
     "macro": ["data_referencia", "selic_anualizada_media_pct", "ipca_acumulado_12m_pct"],
@@ -394,20 +414,28 @@ def linha(nome, titulo, dataset, x, ys, descricao=None):
     }
 
 
+def _ordem(valores):
+    # Mesma forma de ordem customizada usada nos dashboards de exemplo da Databricks (dbdemos).
+    return {"by": "custom-order", "orderedValues": valores}
+
+
 def barras(nome, titulo, dataset, categoria, valor, rotulos, cor=None, horizontal=False, temporal=False,
-           descricao=None, rotulo_cor="Categoria"):
-    """rotulos: (rótulo da categoria, rótulo do valor). horizontal = categoria no eixo y, ordenada por valor."""
+           descricao=None, rotulo_cor="Categoria", ordem_cor=None, ordem_categoria=None):
+    """rotulos: (rótulo da categoria, rótulo do valor).
+    Ordem das categorias: `ordem_categoria` (lista) se dada; senão por valor, maior primeiro (no topo nas
+    horizontais, à esquerda nas verticais). `ordem_cor`: ordem das séries de cor (pilha e legenda)."""
     campos = [categoria, valor] + ([cor] if cor else [])
     tipo_cat = "temporal" if temporal else "categorical"
     eixo_cat = {"fieldName": categoria["name"], "scale": {"type": tipo_cat}, "displayName": rotulos[0]}
     eixo_val = {"fieldName": valor["name"], "scale": {"type": "quantitative"}, "displayName": rotulos[1]}
-    if horizontal:
-        eixo_cat["scale"]["sort"] = {"by": "x-reversed"}
-        encodings = {"x": eixo_val, "y": eixo_cat}
-    else:
-        encodings = {"x": eixo_cat, "y": eixo_val}
+    if not temporal:
+        eixo_cat["scale"]["sort"] = (_ordem(ordem_categoria) if ordem_categoria
+                                     else {"by": "x-reversed" if horizontal else "y-reversed"})
+    encodings = {"x": eixo_val, "y": eixo_cat} if horizontal else {"x": eixo_cat, "y": eixo_val}
     if cor:
         encodings["color"] = {"fieldName": cor["name"], "scale": {"type": "categorical"}, "displayName": rotulo_cor}
+        if ordem_cor:
+            encodings["color"]["scale"]["sort"] = _ordem(ordem_cor)
     return {
         "name": nome,
         "queries": [_query(dataset, campos)],
@@ -449,21 +477,28 @@ def abertura(nome, pergunta, como_ler):
     return texto(nome, [f"## {pergunta}", como_ler])
 
 
-DELTA = "Δ vs. mês anterior"
+DELTA = "Variação em relação ao mês anterior"
 
 # --- páginas (grade de 12 colunas) --------------------------------------------------------------
+# Texto exibido em português direto, para quem nunca viu o projeto: nada de "estoque", "saldo" ou "fluxo" nos
+# títulos. "Crescimento líquido" (= passaram a estar ativas − deixaram de estar ativas) é definido onde aparece.
+
+AREA = "Setor (grande área)"
+CRESC_MIL = "Crescimento líquido por 1.000 ativas"
+DEF_CRESC = ("Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que "
+             "deixaram de estar ativas (baixas, inaptidões, suspensões).")
 
 # 1. Resumo -------------------------------------------------------------------------------------
 P1 = ["resumo_mes", "estoque_mes", "painel"]
 PAGINA_RESUMO = [
-    (abertura("p1_texto", "O estoque de empresas está crescendo?",
-              "Contadores: **último mês carregado** (ver ao lado) e, embaixo, a diferença para o mês anterior. "
-              "Empresa = matriz do CNPJ; mês = mês em que o snapshot da Receita detectou o fato. "
-              "Saldo = entradas − saídas do estoque de ativas."), pos(0, 0, 12, 3)),
+    (abertura("p1_texto", "O número de empresas ativas está crescendo?",
+              "Os números grandes são do **último mês disponível** (indicado ao lado); embaixo de cada um, a variação "
+              "em relação ao mês anterior. Empresa = matriz do CNPJ. Cada mudança é contada no mês em que apareceu "
+              "pela primeira vez no cadastro mensal da Receita."), pos(0, 0, 12, 3)),
     (filtro("f1_uf", "UF", "uf", P1), pos(0, 3, 3, 2)),
     (filtro("f1_porte", "Porte", "porte_empresa", P1), pos(3, 3, 3, 2)),
-    (filtro("f1_area", "Grande área (provisório)", "grande_area_cnae", P1), pos(6, 3, 3, 2)),
-    (tabela("t1_mes", "Mês dos contadores", "ultimo_mes",
+    (filtro("f1_area", AREA, "grande_area_cnae", P1), pos(6, 3, 3, 2)),
+    (tabela("t1_mes", "Mês dos números", "ultimo_mes",
             [("mes_dos_contadores", "Último mês"), ("comparado_com", "Comparado com")]), pos(9, 3, 3, 2)),
 
     (contador("c1_ativas", "Empresas ativas no fim do último mês", "resumo_mes", soma("ativas_ultimo_mes")),
@@ -471,147 +506,159 @@ PAGINA_RESUMO = [
     (contador("c1_aberturas", "Aberturas no último mês", "resumo_mes", soma("aberturas_ultimo_mes")),
      pos(3, 5, 2, 3)),
     (contador("c1_baixas", "Baixas no último mês", "resumo_mes", soma("baixas_ultimo_mes")), pos(5, 5, 2, 3)),
-    (contador("c1_saldo", "Saldo do estoque no último mês", "resumo_mes", soma("saldo_ultimo_mes")),
-     pos(7, 5, 2, 3)),
+    (contador("c1_saldo", "Crescimento líquido no último mês", "resumo_mes", soma("saldo_ultimo_mes"),
+              descricao=DEF_CRESC), pos(7, 5, 2, 3)),
     (contador("c1_ab_por_baixa", "Aberturas por baixa no último mês", "resumo_mes",
               razao("aberturas_ultimo_mes", "baixas_ultimo_mes"),
               descricao="Acima de 1: abrem mais empresas do que fecham."), pos(9, 5, 3, 3)),
 
     (contador("c1_ativas_d", DELTA, "resumo_mes", soma("ativas_delta"),
-              descricao="No Brasil é igual ao saldo (o estoque fecha com os fluxos). Com filtro pode diferir: "
+              descricao="Sem filtro, é igual ao crescimento líquido do mês. Com filtro pode diferir um pouco: "
                         "empresas que mudam de UF, porte ou setor trocam de grupo."), pos(0, 8, 3, 2)),
     (contador("c1_aberturas_d", DELTA, "resumo_mes", soma("aberturas_delta")), pos(3, 8, 2, 2)),
     (contador("c1_baixas_d", DELTA, "resumo_mes", soma("baixas_delta")), pos(5, 8, 2, 2)),
     (contador("c1_saldo_d", DELTA, "resumo_mes", soma("saldo_delta")), pos(7, 8, 2, 2)),
-    (contador("c1_ab_por_baixa_ant", "No mês anterior", "resumo_mes",
+    (contador("c1_ab_por_baixa_ant", "Aberturas por baixa no mês anterior", "resumo_mes",
               razao("aberturas_mes_anterior", "baixas_mes_anterior")), pos(9, 8, 3, 2)),
 
-    (linha("l1_estoque", "O estoque de empresas ativas cresce mês a mês?", "estoque_mes", mes(),
+    (linha("l1_estoque", "O número de empresas ativas cresce mês a mês?", "estoque_mes", mes(),
            [(soma("estoque_final_ativas"), "Empresas ativas")],
-           descricao="Matrizes ativas no fim de cada mês. 2023-05 é o ponto de partida (carga inicial)."),
+           descricao="Matrizes ativas no fim de cada mês. Maio/2023 é o ponto de partida (primeira carga)."),
      pos(0, 10, 6, 7)),
-    (linha("l1_entradas_saidas", "Entram mais empresas no estoque do que saem?", "painel", mes(), [
-        (soma("qtd_entradas_estoque"), "Entradas (aberturas + reativações)"),
-        (soma("qtd_saidas_estoque"), "Saídas (baixas, inaptidões, suspensões)"),
-    ], descricao="Fluxos do estoque de ativas por mês de detecção. A distância entre as linhas é o saldo."),
-     pos(6, 10, 6, 7)),
+    (linha("l1_entradas_saidas", "Mais empresas passam a estar ativas do que deixam de estar?", "painel", mes(), [
+        (soma("qtd_entradas_estoque"), "Passaram a estar ativas (aberturas e reativações)"),
+        (soma("qtd_saidas_estoque"), "Deixaram de estar ativas (baixas, inaptidões, suspensões)"),
+    ], descricao="Por mês em que a mudança apareceu no cadastro. A distância entre as linhas é o crescimento "
+                 "líquido do mês."), pos(6, 10, 6, 7)),
 ]
 
 # 2. Quem ---------------------------------------------------------------------------------------
 P2 = ["fluxos_empresa"]
 PAGINA_QUEM = [
     (abertura("p2_texto", "Quem abre e quem fecha?",
-              "Porte e setor das empresas que abrem e fecham. Os percentuais somam o período inteiro de fluxo; as "
-              "taxas são por 1.000 empresas ativas no início do mês (Brasil, não reagem aos filtros)."),
-     pos(0, 0, 12, 3)),
+              "Porte e setor das empresas que abrem e fecham. Os percentuais cobrem todo o período com movimentação "
+              "(jun–ago/2023). As taxas são por 1.000 empresas ativas no início do mês e valem para o Brasil "
+              "(não mudam com os filtros)."), pos(0, 0, 12, 3)),
     (filtro("f2_uf", "UF", "uf", P2), pos(0, 3, 6, 1)),
-    (filtro("f2_area", "Grande área (provisório)", "grande_area_cnae", P2), pos(6, 3, 6, 1)),
+    (filtro("f2_area", AREA, "grande_area_cnae", P2), pos(6, 3, 6, 1)),
 
     (contador("c2_mei_ab", "% das aberturas que são MEI", "fluxos_empresa", media("pct_mei_abertura")),
      pos(0, 4, 3, 3)),
     (contador("c2_mei_bx", "% das baixas que são MEI", "fluxos_empresa", media("pct_mei_baixa"),
-              descricao="Para quem saiu de ATIVA, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."), pos(3, 4, 3, 3)),
-    (tabela("t2_setor_extremos", "Setor que mais cresce e que menos cresce", "extremos_setor", [
-        ("posicao", ""), ("grande_area_cnae", "Grande área"), ("taxa_saldo_por_mil", "Saldo por 1.000 ativas/mês"),
-    ], descricao=f"Brasil; só áreas com CNAE conhecido e média ≥ {PISO_ATIVAS} ativas."), pos(6, 4, 6, 3)),
+              descricao="Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."),
+     pos(3, 4, 3, 3)),
+    (tabela("t2_setor_extremos", "Setor que mais cresce e setor que menos cresce", "extremos_setor", [
+        ("posicao", "Posição"), ("grande_area_cnae", "Setor"), ("taxa_saldo_por_mil", f"{CRESC_MIL} (por mês)"),
+    ], descricao=f"Brasil; só setores com CNAE conhecido e média ≥ {PISO_ATIVAS} ativas. {DEF_CRESC}"),
+     pos(6, 4, 6, 3)),
 
     (barras("b2_porte", "O MEI domina tanto as aberturas quanto as baixas?", "fluxos_empresa", coluna("fluxo"),
-            soma("qtd"), ("Fluxo", "Empresas"), cor=coluna("porte_empresa"), rotulo_cor="Porte",
-            descricao="Composição por porte das aberturas e das baixas no período."), pos(0, 7, 6, 7)),
+            soma("qtd"), ("", "Empresas"), cor=coluna("porte_empresa"), rotulo_cor="Porte", ordem_cor=ORDEM_PORTE,
+            descricao="Aberturas e baixas do período, divididas por porte (o maior porte na base da barra)."),
+     pos(0, 7, 6, 7)),
     (barras("b2_saldo_area", "Quais setores crescem mais, em proporção ao seu tamanho?", "taxas_setor",
-            coluna("grande_area_cnae"), soma("taxa_saldo_por_mil"), ("Grande área", "Saldo por mil"),
-            horizontal=True, descricao="(Entradas − saídas) ÷ ativas no início do mês, média mensal. Brasil."),
-     pos(6, 7, 6, 7)),
+            coluna("grande_area_cnae"), soma("taxa_saldo_por_mil"), ("Setor", CRESC_MIL), horizontal=True,
+            descricao=f"Média mensal, Brasil. {DEF_CRESC}"), pos(6, 7, 6, 7)),
     (barras("b2_taxa_area", "Em quais setores as empresas fecham mais?", "taxas_setor",
-            coluna("grande_area_cnae"), soma("taxa_fechamento_por_mil"), ("Grande área", "Baixas por mil"),
-            horizontal=True, descricao="Baixas de empresas ativas ÷ ativas no início do mês, média mensal. Brasil."),
-     pos(0, 14, 6, 8)),
+            coluna("grande_area_cnae"), soma("taxa_fechamento_por_mil"), ("Setor", "Baixas por 1.000 ativas"),
+            horizontal=True, descricao="Baixas de empresas que estavam ativas, para cada 1.000 ativas no início do "
+                                       "mês (média mensal). Brasil."), pos(0, 14, 6, 8)),
     (tabela("t2_cnaes", "Quais atividades concentram as aberturas?", "top_cnaes", [
-        ("nome_cnae", "CNAE principal"), ("grande_area_cnae", "Grande área"),
-        ("aberturas", "Aberturas"), ("baixas", "Baixas"), ("saldo", "Saldo"),
-    ], descricao="20 CNAEs com mais aberturas no período. Brasil."), pos(6, 14, 6, 8)),
+        ("nome_cnae", "Atividade (CNAE principal)"), ("grande_area_cnae", "Setor"),
+        ("aberturas", "Aberturas"), ("baixas", "Baixas"), ("saldo", "Crescimento líquido"),
+    ], descricao=f"As 20 atividades com mais aberturas no período. Brasil. {DEF_CRESC}"), pos(6, 14, 6, 8)),
 ]
 
 # 3. Onde ---------------------------------------------------------------------------------------
 PAGINA_ONDE = [
-    (abertura("p3_texto", "Onde o número de empresas cresce mais?",
-              "Ranking por **taxa** (por 1.000 ativas no início do mês, média mensal), não por volume: SP sempre "
-              f"lideraria em volume. UFs com média < {PISO_ATIVAS} ativas, UF não identificada e exterior ficam fora. "
-              "Brasil inteiro: esta página não tem filtros."), pos(0, 0, 12, 3)),
-    (tabela("t3_uf_extremos", "UF com maior e com menor crescimento líquido", "extremos_uf", [
-        ("posicao", ""), ("uf", "UF"), ("taxa_crescimento_por_mil", "Saldo por 1.000 ativas/mês"),
-    ]), pos(0, 3, 5, 3)),
-    (tabela("t3_uf", "Abertura, fechamento e saldo por UF", "taxas_uf", [
-        ("uf", "UF"), ("taxa_abertura_por_mil", "Aberturas por mil"),
-        ("taxa_fechamento_por_mil", "Baixas por mil"), ("taxa_crescimento_por_mil", "Saldo por mil"),
-        ("ativas_inicio_media_mensal", "Ativas no início do mês (média)"),
-    ], descricao="Taxas mensais por 1.000 ativas no início do mês."), pos(0, 6, 5, 10)),
-    (barras("b3_saldo_uf", "Onde o estoque cresce mais, em proporção ao seu tamanho?", "taxas_uf", coluna("uf"),
-            soma("taxa_crescimento_por_mil"), ("UF", "Saldo por mil"), horizontal=True,
-            descricao="(Entradas − saídas) ÷ ativas no início do mês, média mensal."), pos(5, 3, 7, 13)),
+    (abertura("p3_texto", "Onde o número de empresas ativas cresce mais?",
+              "Comparação por **taxa** — crescimento líquido para cada 1.000 empresas ativas no início do mês, média "
+              "mensal — e não por número absoluto (em número absoluto, SP sempre lideraria). Ficam fora UFs com média "
+              f"menor que {PISO_ATIVAS} ativas, UF não identificada e exterior. Brasil inteiro: esta página não tem "
+              "filtros."), pos(0, 0, 12, 3)),
+    (tabela("t3_uf_extremos", "UF que mais cresce e UF que menos cresce", "extremos_uf", [
+        ("posicao", "Posição"), ("uf", "UF"), ("taxa_crescimento_por_mil", f"{CRESC_MIL} (por mês)"),
+    ], descricao=DEF_CRESC), pos(0, 3, 5, 3)),
+    (tabela("t3_uf", "Aberturas, baixas e crescimento líquido por UF, para cada 1.000 ativas", "taxas_uf", [
+        ("uf", "UF"), ("taxa_abertura_por_mil", "Aberturas por 1.000 ativas"),
+        ("taxa_fechamento_por_mil", "Baixas por 1.000 ativas"), ("taxa_crescimento_por_mil", CRESC_MIL),
+        ("ativas_inicio_media_mensal", "Empresas ativas no início do mês (média)"),
+    ], descricao="Taxas mensais (média do período)."), pos(0, 6, 5, 10)),
+    (barras("b3_saldo_uf", "Em quais UFs o número de empresas ativas cresce mais, em proporção ao tamanho?",
+            "taxas_uf", coluna("uf"), soma("taxa_crescimento_por_mil"), ("UF", CRESC_MIL), horizontal=True,
+            descricao=f"Média mensal. {DEF_CRESC}"), pos(5, 3, 7, 13)),
 ]
 
 # 4. Como fecha ---------------------------------------------------------------------------------
 P4 = ["fluxos_empresa", "baixas_idade", "baixas_motivo", "painel", "eventos"]
 PAGINA_COMO_FECHA = [
     (abertura("p4_texto", "Por que e com que idade as empresas fecham?",
-              "Baixas de matriz no período, por categoria do **código de motivo** da Receita e pela idade na baixa "
-              "(data real da baixa − início de atividade). Inaptidão e suspensão também tiram a empresa do "
-              "estoque, mas são reversíveis: a reativação devolve."), pos(0, 0, 12, 3)),
+              "Baixas de matrizes no período, pelo **motivo** registrado pela Receita e pela idade da empresa na "
+              "baixa (data da baixa − data de início de atividade). Inaptidão e suspensão também tiram a empresa da "
+              "lista de ativas, mas podem ser revertidas: a reativação a traz de volta."), pos(0, 0, 12, 3)),
     (filtro("f4_uf", "UF", "uf", P4), pos(0, 3, 4, 1)),
     (filtro("f4_porte", "Porte", "porte_empresa", P4), pos(4, 3, 4, 1)),
-    (filtro("f4_area", "Grande área (provisório)", "grande_area_cnae", P4), pos(8, 3, 4, 1)),
+    (filtro("f4_area", AREA, "grande_area_cnae", P4), pos(8, 3, 4, 1)),
 
     (contador("c4_falencia", "% das baixas por falência ou liquidação judicial", "fluxos_empresa",
-              media("pct_falencia_baixa"), descricao="Motivos 05, 06 e 10 da Receita."), pos(0, 4, 3, 3)),
-    (contador("c4_idade", "Idade mediana na baixa (anos)", "fluxos_empresa", mediana("idade_baixa_anos")),
-     pos(3, 4, 3, 3)),
+              media("pct_falencia_baixa"), descricao="Motivos 05, 06 e 10 da tabela de motivos da Receita."),
+     pos(0, 4, 3, 3)),
+    (contador("c4_idade", "Idade mediana na baixa (anos)", "fluxos_empresa", mediana("idade_baixa_anos"),
+              descricao="Metade das empresas baixadas tinha menos que esta idade."), pos(3, 4, 3, 3)),
     (contador("c4_menos_2", "% das baixas com menos de 2 anos de vida", "fluxos_empresa",
               media("pct_baixa_menos_2_anos")), pos(6, 4, 3, 3)),
     (contador("c4_reativacoes", "Reativações no período", "painel", soma("qtd_reativacoes"),
-              descricao="Matrizes que voltaram a ATIVA (de INAPTA, SUSPENSA ou BAIXADA)."), pos(9, 4, 3, 3)),
+              descricao="Matrizes que voltaram a ser ativas (estavam inaptas, suspensas ou baixadas)."),
+     pos(9, 4, 3, 3)),
 
     (barras("b4_motivo", "Falência é rara: por que as empresas são baixadas?", "baixas_motivo",
-            coluna("categoria_macro_evento"), soma("qtd_empresas"), ("Categoria do motivo", "Empresas"),
-            horizontal=True, descricao="Categoria pelo código de motivo da Receita (spec de semântica § 2.3)."),
-     pos(0, 7, 6, 7)),
+            coluna("categoria_macro_evento"), soma("qtd_empresas"), ("Motivo da baixa", "Empresas"),
+            horizontal=True, descricao="Motivo agrupado pelo código que a Receita registra na baixa "
+                                       "(ver 'Sobre os dados')."), pos(0, 7, 6, 7)),
     (barras("b4_idade", "Com que idade as empresas fecham?", "baixas_idade", coluna("faixa_idade_baixa"),
-            soma("qtd_baixas"), ("Idade na baixa", "Baixas"),
-            descricao="'sem data': início de atividade ou data da baixa ausente, ou baixa antes do início."),
-     pos(6, 7, 6, 7)),
-    (linha("l4_saidas", "Além da baixa: inaptidão, suspensão e reativação mês a mês", "painel", mes(), [
-        (soma("qtd_baixas"), "Baixas"), (soma("qtd_inaptidoes"), "Inaptidões"),
-        (soma("qtd_suspensoes"), "Suspensões"), (soma("qtd_reativacoes"), "Reativações"),
-    ], descricao="Matrizes por mês de detecção."), pos(0, 14, 6, 7)),
-    (barras("b4_tipo", "O que mais muda no cadastro além da situação?", "eventos", coluna("tipo_evento"),
-            soma("qtd_eventos"), ("Tipo de evento", "Eventos"), horizontal=True,
-            descricao="Todos os eventos do log, inclusive de filiais e de sócios. Aberturas não vêm daqui."),
-     pos(6, 14, 6, 7)),
+            soma("qtd_baixas"), ("Idade na baixa", "Baixas"), ordem_categoria=ORDEM_FAIXA_IDADE,
+            descricao="Faixas em ordem de idade. 'sem data': falta a data de início ou a da baixa, ou a baixa é "
+                      "anterior ao início."), pos(6, 7, 6, 7)),
+    (linha("l4_saidas", "Além das baixas: quantas empresas ficam inaptas, são suspensas ou voltam a ser ativas?",
+           "painel", mes(), [
+               (soma("qtd_baixas"), "Baixas"), (soma("qtd_inaptidoes"), "Inaptidões"),
+               (soma("qtd_suspensoes"), "Suspensões"), (soma("qtd_reativacoes"), "Reativações"),
+           ], descricao="Matrizes, por mês em que a mudança apareceu no cadastro. Inaptidão: a Receita declara a "
+                        "empresa inapta (ex.: deixou de entregar declarações). Suspensão: o CNPJ é suspenso por "
+                        "irregularidade cadastral. Reativação: volta a ser ativa."), pos(0, 14, 6, 7)),
+    (barras("b4_tipo", "O que mais muda no cadastro, além de abrir e fechar?", "eventos", coluna("tipo_evento"),
+            soma("qtd_eventos"), ("Tipo de mudança", "Mudanças registradas"), horizontal=True,
+            descricao="Todas as mudanças detectadas entre um mês e o seguinte, inclusive de filiais e de sócios. "
+                      "Aberturas não são contadas aqui."), pos(6, 14, 6, 7)),
 ]
 
 # 5. Mercado ativo ------------------------------------------------------------------------------
+# Os quatro filtros valem para todos os widgets: os três datasets têm uf, municipio, bairro (mesma normalização,
+# constante BAIRRO) e nome_cnae.
 P5 = ["mercado", "mercado_bairros", "mercado_empresas"]
 PAGINA_MERCADO = [
     (abertura("p5_texto", "Quem são os concorrentes de uma empresa num lugar?",
-              "Matrizes ativas na versão mais recente. Escolha UF, município e CNAE para ver o tamanho do mercado "
-              "local. Sem identificação de MEI nem de empresário individual (LGPD)."), pos(0, 0, 12, 3)),
-    (filtro("f5_uf", "UF", "uf", P5), pos(0, 3, 4, 1)),
-    (filtro("f5_municipio", "Município", "municipio", P5), pos(4, 3, 4, 1)),
-    # Bairros não têm CNAE: o filtro de CNAE vale só para `mercado` e `mercado_empresas`.
-    (filtro("f5_cnae", "CNAE principal", "nome_cnae", ["mercado", "mercado_empresas"]), pos(8, 3, 4, 1)),
+              "Matrizes ativas no último cadastro. Escolha UF, município, bairro e atividade (CNAE) para ver o tamanho "
+              "do mercado local. Sem identificação de MEI nem de empresário individual (LGPD)."), pos(0, 0, 12, 3)),
+    (filtro("f5_uf", "UF", "uf", P5), pos(0, 3, 3, 1)),
+    (filtro("f5_municipio", "Município", "municipio", P5), pos(3, 3, 3, 1)),
+    (filtro("f5_bairro", "Bairro", "bairro", P5), pos(6, 3, 3, 1)),
+    (filtro("f5_cnae", "Atividade (CNAE principal)", "nome_cnae", P5), pos(9, 3, 3, 1)),
 
     (contador("c5_ativas", "Empresas ativas", "mercado", soma("empresas_ativas")), pos(0, 4, 4, 4)),
-    (barras("b5_porte", "Ativas por porte", "mercado", coluna("porte_empresa"), soma("empresas_ativas"),
+    (barras("b5_porte", "Empresas ativas por porte", "mercado", coluna("porte_empresa"), soma("empresas_ativas"),
             ("Porte", "Empresas")), pos(4, 4, 8, 4)),
-    (barras("b5_bairro", "Ativas por bairro (20 maiores de cada município)", "mercado_bairros", coluna("bairro"),
-            soma("empresas_ativas"), ("Bairro", "Empresas"), horizontal=True,
-            descricao="Escolha um município. O filtro de CNAE não reage neste gráfico."), pos(0, 8, 6, 8)),
-    (barras("b5_area", "Ativas por grande área", "mercado", coluna("grande_area_cnae"), soma("empresas_ativas"),
-            ("Grande área", "Empresas"), horizontal=True), pos(6, 8, 6, 8)),
+    (barras("b5_bairro", "Em quais bairros essas empresas estão? (20 maiores bairros do município)",
+            "mercado_bairros", coluna("bairro"), soma("empresas_ativas"), ("Bairro", "Empresas"), horizontal=True,
+            descricao="Os 20 bairros com mais empresas ativas de cada município (contando todas as atividades). "
+                      "Com filtro de atividade, as barras mostram só as empresas daquela atividade nesses bairros."),
+     pos(0, 8, 6, 8)),
+    (barras("b5_area", "Empresas ativas por setor", "mercado", coluna("grande_area_cnae"), soma("empresas_ativas"),
+            ("Setor", "Empresas"), horizontal=True), pos(6, 8, 6, 8)),
     (tabela("t5_empresas", "Maiores empresas ativas (1.000 maiores por capital social)", "mercado_empresas", [
         ("razao_social", "Razão social"), ("nome_fantasia", "Nome fantasia"), ("porte_empresa", "Porte"),
         ("capital_social", "Capital social (R$)"), ("data_inicio_atividade", "Início"),
-        ("municipio", "Município"), ("bairro", "Bairro"), ("nome_cnae", "CNAE"),
+        ("municipio", "Município"), ("bairro", "Bairro"), ("nome_cnae", "Atividade"),
     ], descricao="Fora MEI, empresário individual e razão social com 11 dígitos seguidos (LGPD). "
                  "Os filtros atuam sobre as 1.000 maiores do Brasil."), pos(0, 16, 12, 9)),
 ]
@@ -620,26 +667,29 @@ PAGINA_MERCADO = [
 PAGINA_SOBRE = [
     (texto("p6_texto", [
         "## Como ler estes números?",
-        "- **Dois relógios.** Todo fluxo é contado no **mês de detecção**: o primeiro snapshot mensal da Receita em "
-        "que o fato aparece. O snapshot é extraído por volta do dia 10, então o mês M cobre, aproximadamente, de "
-        "meados de M−1 a meados de M. A **data real** declarada pela Receita só é usada para idade e tempo até o "
-        "evento (ex.: idade na baixa), nunca para somar fluxo do mês.",
-        "- **Empresa = matriz** do CNPJ raiz (8 dígitos). Eventos de filial ficam no log, mas não entram nos "
-        "indicadores de empresa.",
-        "- **Estoque** = matrizes com situação ATIVA. Entradas = aberturas + reativações; saídas = baixas, "
-        "inaptidões, suspensões e nulidades de empresas ativas. O estoque de cada mês fecha com os fluxos.",
-        "- **Categorias de baixa** vêm do código de motivo da Receita: falência/liquidação judicial = motivos 05, "
+        "- **Mês da mudança × data real.** Toda contagem mensal usa o mês em que a mudança apareceu pela primeira "
+        "vez no cadastro mensal publicado pela Receita. Esse cadastro é extraído por volta do dia 10, então o mês M "
+        "cobre, aproximadamente, de meados de M−1 a meados de M. A **data real** declarada pela Receita só é usada "
+        "para calcular idade (ex.: idade na baixa), nunca para contar quantas mudanças houve no mês.",
+        "- **Empresa = matriz** do CNPJ (os 8 primeiros dígitos). Mudanças de filiais são registradas, mas não "
+        "entram nos números de empresas.",
+        "- **Empresas ativas** = matrizes com situação cadastral ATIVA. **Passaram a estar ativas** = aberturas e "
+        "reativações. **Deixaram de estar ativas** = baixas, inaptidões, suspensões e anulações de empresas que "
+        "estavam ativas. **Crescimento líquido** = a diferença entre os dois; somado às ativas do mês anterior, dá "
+        "exatamente as ativas do mês.",
+        "- **Motivos de baixa** vêm do código registrado pela Receita: falência/liquidação judicial = motivos 05, "
         "06 e 10; óbito do MEI = 75; baixa voluntária = 01, 37, 54; de ofício = 13, 14, 15, 63, 64, 66, 71, 73.",
-        "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Rankings só incluem "
-        f"grupos com média ≥ {PISO_ATIVAS} ativas.",
-        "- **Limites.** Só há três meses de fluxo (jun–ago/2023): 2023-05 é a carga inicial (baseline) e não tem "
-        "evento nenhum. Grande área é um agrupamento provisório de CNAE. Nenhum CPF, nome de sócio ou razão social "
-        "de MEI/empresário individual aparece no painel (LGPD).",
-        "- **Filtros** valem só na própria página. Taxas e rankings por setor/UF são do Brasil e não reagem a filtro.",
+        "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Comparações entre "
+        f"UFs e setores só incluem grupos com média de pelo menos {PISO_ATIVAS} ativas.",
+        "- **Limites.** Só há três meses com movimentação (jun–ago/2023): maio/2023 é a primeira carga e serve só "
+        "de ponto de partida. Setor (grande área) é um agrupamento provisório de CNAE. Nenhum CPF, nome de sócio ou "
+        "razão social de MEI/empresário individual aparece no painel (LGPD).",
+        "- **Filtros** valem só na própria página. Taxas e comparações por setor/UF são do Brasil e não mudam com "
+        "filtros.",
     ]), pos(0, 0, 12, 10)),
-    (linha("l6_macro", "Contexto macroeconômico no período: Selic e IPCA 12 meses (% a.a.)", "macro", mes(), [
-        (soma("selic_anualizada_media_pct"), "Selic média"), (soma("ipca_acumulado_12m_pct"), "IPCA 12m"),
-    ], descricao="Só contexto: três meses de fluxo não sustentam leitura de causa. Fonte: BCB."),
+    (linha("l6_macro", "Contexto econômico do período: Selic e inflação em 12 meses (% ao ano)", "macro", mes(), [
+        (soma("selic_anualizada_media_pct"), "Selic média"), (soma("ipca_acumulado_12m_pct"), "IPCA 12 meses"),
+    ], descricao="Só contexto: três meses não permitem tirar conclusão de causa. Fonte: Banco Central."),
      pos(0, 10, 12, 6)),
 ]
 
@@ -670,6 +720,8 @@ def montar_dashboard() -> dict:
 # --- validação local ----------------------------------------------------------------------------
 
 AGREGACOES = ("SUM(", "AVG(", "PERCENTILE(", "try_divide(SUM(")
+# Jargão do projeto que a banca não entende (pedido do autor): não pode aparecer no texto exibido.
+JARGAO = r"\b(estoque|saldo|fluxos?|snapshot|baseline|detec[çc][ãa]o)\b|Δ"
 
 
 def validar(dash: dict) -> None:
@@ -726,7 +778,14 @@ def validar(dash: dict) -> None:
                         and a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]):
                     erros.append(f"{pagina['name']}: '{n1}' e '{n2}' se sobrepõem")
 
-    # 4. nomes de widget únicos no dashboard e nenhum dataset órfão
+    # 4. sem jargão no texto exibido (títulos, rótulos, descrições, caixas de texto); nomes de coluna não contam
+    for pagina in dash["pages"]:
+        for texto_exibido in _textos_exibidos(pagina):
+            achado = re.search(JARGAO, texto_exibido, flags=re.IGNORECASE)
+            if achado:
+                erros.append(f"{pagina['name']}: jargão '{achado.group(0)}' em: {texto_exibido[:80]}")
+
+    # 5. nomes de widget únicos no dashboard e nenhum dataset órfão
     repetidos = {n for n in nomes_widgets if nomes_widgets.count(n) > 1}
     if repetidos:
         erros.append(f"nomes de widget repetidos: {sorted(repetidos)}")
@@ -736,6 +795,26 @@ def validar(dash: dict) -> None:
     if erros:
         raise SystemExit("❌ Validação do dashboard falhou:\n  - " + "\n  - ".join(erros))
     print("✅ Validação ok: datasets, colunas, filtros, contadores, textos de abertura e grade consistentes.")
+
+
+def _textos_exibidos(pagina):
+    """Todo texto que o leitor vê na página: displayName da página, títulos, descrições, rótulos e textos."""
+    yield pagina["displayName"]
+
+    def percorre(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k in ("title", "description", "displayName") and isinstance(v, str):
+                    yield v
+                elif k == "lines":
+                    yield from v
+                else:
+                    yield from percorre(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from percorre(v)
+
+    yield from percorre(pagina["layout"])
 
 
 def _validar_encodings(widget, encodings, campos_por_query):
