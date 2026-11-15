@@ -84,3 +84,7 @@ entradas/saídas e `qtd_baixas_de_ativas` não mudam: a empresa nunca esteve ati
 **Consequências:** ~8 mil baixas a mais por mês na base real; aberturas por baixa de agosto cai de 2,09 para
 ~1,98; taxa de fechamento por mil não muda. O dashboard (`baixas_motivo`) passa a contar a primeira aparição e
 fecha com o fato (DQ 2b). Spec: `specs/features/2026-11-14-semantica-eventos-e-fluxos.md` §2.4.
+**Complemento D-17b (2026-11-14, autor):** porte dessas baixas pelas datas do Simples, não pela natureza
+jurídica (empresário individual pode ser ME): `MEI` se opção pelo MEI ≤ data da baixa e exclusão nula ou ≥ data
+da baixa (tolerância 0 dia; amostra: exclusão = data da baixa em 100%). Base real: ~98% das marcadas ME tinham
+as duas datas. % MEI das baixas volta ao patamar anterior (amostra: ~62–68% → ~67–71%).

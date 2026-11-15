@@ -122,7 +122,7 @@ o posterior (B23). `opcao_*` ficam NULL quando desconhecidos (sem `COALESCE(...,
 | `teve_falencia_mes` | `teve_baixa_mes` e motivo ∈ {05, 06, 10} |
 | `teve_inaptidao_mes` | idem para INAPTA (inclui primeira aparição já INAPTA) |
 | `teve_suspensao_mes` | idem para SUSPENSA (inclui primeira aparição já SUSPENSA) |
-| `porte_empresa`, `opcao_pelo_mei`, `opcao_pelo_simples` | valor do mês anterior quando `saiu_estoque_mes` (B23); senão o do mês (na primeira aparição já BAIXADA não há anterior: vale o da própria versão) |
+| `porte_empresa`, `opcao_pelo_mei`, `opcao_pelo_simples` | valor do mês anterior quando `saiu_estoque_mes` (B23); na primeira aparição já BAIXADA, `MEI` / `TRUE` se as datas do Simples mostram MEI na data da baixa (D-17b); senão o do mês |
 
 **Primeira aparição já fora de ATIVA (D-17, 2026-11-14).** Empresa que abre e fecha entre dois snapshots
 aparece pela primeira vez (mês > baseline) já BAIXADA: conta como **abertura e baixa no mesmo mês**, com
@@ -132,6 +132,18 @@ de ativas **não mudam**, e ela não entra em `qtd_baixas_de_ativas` (nem na tax
 mesmo critério do log, que já registra `MUDOU ESTADO CADASTRAL` NULL → situação na primeira aparição (OBT:
 anterior `INEXISTENTE`); o dataset `baixas_motivo` passa a incluí-la, e o DQ 2b do `dq_gold.sql` confere que
 o total de baixas do fato fecha com o da OBT.
+
+**Porte da baixa na primeira aparição (D-17b).** Sem versão anterior, o B23 não se aplica, e a Receita tira a
+marca de MEI na baixa (o MEI aparece como ME). Regra, pelas **datas** do Simples (`silver_intermediate.dados_simples`,
+por `cnpj_basico`, versões com `valid_since` ≤ mês da aparição), nunca pela natureza jurídica: porte `MEI` e
+`opcao_pelo_mei = TRUE` quando `data_opcao_mei` válida ≤ data da baixa (`data_situacao_cadastral` da matriz) e
+`data_exclusao_mei` nula ou ≥ data da baixa. Tolerância **0 dia**: na amostra, nas 253 baixas desse tipo com
+exclusão do MEI, a exclusão é exatamente a data da baixa (diferença 0 em 100%), e a opção é a data de início de
+atividade. Data inválida ou ausente = sem informação (fica o porte da versão). O join com o Simples é restrito
+às empresas de primeira aparição já BAIXADA. O dataset `baixas_motivo` pega UF/porte/área do fato (só a
+categoria vem da OBT), então os totais por porte fecham por construção; a coluna `porte_empresa` da OBT nesses
+eventos continua com o porte da versão (ME). DQ 2c trava a regra e exige ≥ 80% de MEI entre essas baixas
+(com 100+ na janela) **[padrão]**.
 
 Identidade obrigatória (exceto no baseline, onde não há fluxo por construção):
 `estoque_final(M) = estoque_inicial(M) + entradas(M) − saídas(M)` e
@@ -211,7 +223,10 @@ classificação por código de motivo substitui a por texto; "falência" passa a
 1.704/1.574/1.826 → 1.772/1.646/1.943 (+68/+72/+117); aberturas por baixa em agosto 2,22 → 2,09; falências,
 baixas de ativas, taxa de fechamento, ativas e crescimento líquido inalterados; total de baixas do fato =
 `baixas_idade` = `baixas_motivo` em todos os meses; DQ gold passa. 250 das 257 empresas que já aparecem
-BAIXADA são natureza 2135 com porte ME e sem MEI (ver backlog).
+BAIXADA são natureza 2135 com porte ME e sem MEI → corrigido por D-17b: 250 viram MEI (datas do Simples), 3 ME
+sem linha no Simples e 1 EPP ficam; % MEI das baixas 67,6/63,2/62,1 → 71,2/67,4/68,1; % MEI das aberturas
+75,2/72,7/71,2 → 77,3/74,9/74,0 (as mesmas empresas são aberturas). Nada mais mudou (baixas, ativas,
+crescimento líquido, idade na baixa, falências).
 
 **Para executar na base real (T8), nesta ordem:**
 
