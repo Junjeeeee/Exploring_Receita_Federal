@@ -206,5 +206,13 @@ com filtros `municipio = 'RIO DE JANEIRO' AND nome_cnae = 'CABELEIREIROS…'` (c
 `… AND bairro = 'COPACABANA'` (contador 231 = barra do bairro 231) e `bairro = 'NAO INFORMADO'` (138 empresas).
 Prévia atualizada e lida de volta (6 páginas, 55 widgets, `sort` de cor presente). Renderização não conferida.
 
+**2026-11-15 — conferência na tela pelo autor:** (A) `c1_ab_por_baixa`/`_ant` com `try_divide(SUM, SUM)` e nome
+`razao(a,b)` mostravam "Select fields to visualize"; trocados por `SUM(a) / SUM(b)` com nome simples, e `validar()`
+passa a recusar `try_divide` e vírgula em nome de campo. Página temporária "Teste (apagar)" (só na prévia, via
+`gerar_dashboard --com-pagina-teste --saida <arq>`) com quatro variantes: A `SUM/SUM`, B `try_divide` com nome
+simples, C razão em SQL + `SUM` (Brasil), D razão em SQL sem agregação (Brasil). (B) a pilha por porte saiu
+invertida: no Lakeview o primeiro valor de `custom-order` vai para o topo; `ORDEM_PORTE` agora vai do menor para o
+maior (MEI na base).
+
 **Para a base real:** nenhuma migração além da já prevista (`fato_empresa_mes` está no `DROP` de
 `src/jobs/migracoes/2026-11-14_semantica_eventos.sql`); nenhum arquivo SQL novo, Job inalterado.

@@ -39,8 +39,8 @@ Texto exibido sem jargão: `validar()` recusa "estoque", "saldo", "fluxo", "snap
 em títulos, rótulos, descrições e textos (nomes de coluna não contam). "Crescimento líquido" é definido onde aparece.
 
 Ordem das barras: rankings de uma série ordenados por valor (maior no topo nas horizontais, à esquerda nas
-verticais); séries de cor por porte em ordem fixa `ORDEM_PORTE` (MEI > ME > DEMAIS > EPP > não informado), a maior
-na base da pilha; faixas de idade em ordem natural (`ORDEM_FAIXA_IDADE`). Sintaxe `custom-order` copiada dos
+verticais); séries de cor por porte em ordem fixa `ORDEM_PORTE`, do menor para o maior (no Lakeview o primeiro valor da
+lista vai para o topo da pilha), então MEI fica na base; faixas de idade em ordem natural (`ORDEM_FAIXA_IDADE`). Sintaxe `custom-order` copiada dos
 dashboards de exemplo da Databricks (dbdemos).
 
 Mercado ativo: os três datasets usam o mesmo bairro normalizado (`BAIRRO`: nulo/vazio → `NAO INFORMADO`);
@@ -48,7 +48,7 @@ Mercado ativo: os três datasets usam o mesmo bairro normalizado (`BAIRRO`: nulo
 quatro filtros valem para todos os widgets.
 
 Widgets de maior risco de formato (sintaxe não vista em JSON exportado pelo workspace):
-`c1_ab_por_baixa` e `c1_ab_por_baixa_ant` (`try_divide(SUM(..), SUM(..))`). `c4_idade` usa `PERCENTILE(col, 0.5)`; a ordem das séries de cor de `b2_porte` (`custom-order` no encoding de cor) e qual ponta vai na base da pilha,
+`c1_ab_por_baixa` e `c1_ab_por_baixa_ant` (`SUM(a) / SUM(b)`; a forma anterior com `try_divide` e nome `razao(a,b)` NÃO desenhou — ver página "Teste (apagar)" da prévia, gerada com `--com-pagina-teste --saida <arquivo>` e publicada com `publicar_dashboard_amostra.py --arquivo <arquivo>`). `c4_idade` usa `PERCENTILE(col, 0.5)`; a ordem das séries de cor de `b2_porte` (`custom-order` no encoding de cor) e qual ponta vai na base da pilha,
 forma vista num dashboard exportado pela Databricks. Se um deles quebrar, reconfigurar pela UI e trazer o JSON
 regravado para o gerador.
 
