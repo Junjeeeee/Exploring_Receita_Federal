@@ -184,18 +184,27 @@
       "name": "baixas_motivo",
       "displayName": "Baixas de matriz por categoria de motivo",
       "queryLines": [
+        "WITH motivo AS (\n",
+        "    SELECT mes_referencia, cnpj_raiz, MAX(categoria_macro_evento) AS categoria_macro_evento\n",
+        "    FROM tcc_receita.gold.obt_dashboard_eventos\n",
+        "    WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'\n",
+        "      AND eh_matriz = TRUE\n",
+        "      AND situacao_cadastral_posterior = 'BAIXADA'\n",
+        "      AND situacao_cadastral_anterior <> 'BAIXADA'\n",
+        "    GROUP BY mes_referencia, cnpj_raiz\n",
+        ")\n",
         "SELECT\n",
-        "    data_referencia,\n",
-        "    uf,\n",
-        "    porte_empresa,\n",
-        "    grande_area_cnae,\n",
-        "    categoria_macro_evento,\n",
-        "    COUNT(DISTINCT cnpj_raiz) AS qtd_empresas\n",
-        "FROM tcc_receita.gold.obt_dashboard_eventos\n",
-        "WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'\n",
-        "  AND eh_matriz = TRUE\n",
-        "  AND situacao_cadastral_posterior = 'BAIXADA'\n",
-        "  AND situacao_cadastral_anterior <> 'BAIXADA'\n",
+        "    f.data_referencia,\n",
+        "    f.uf,\n",
+        "    f.porte_empresa,\n",
+        "    f.grande_area_cnae,\n",
+        "    COALESCE(m.categoria_macro_evento, 'NAO IDENTIFICADO') AS categoria_macro_evento,\n",
+        "    COUNT(*) AS qtd_empresas\n",
+        "FROM tcc_receita.gold.fato_empresa_mes f\n",
+        "LEFT JOIN motivo m\n",
+        "  ON m.mes_referencia = f.mes_referencia\n",
+        " AND m.cnpj_raiz = f.cnpj_raiz\n",
+        "WHERE f.teve_baixa_mes\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -1420,7 +1429,7 @@
                 "showTitle": true,
                 "title": "% das baixas que são MEI",
                 "showDescription": true,
-                "description": "Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita). Quem já aparece baixada no primeiro cadastro fica com o porte registrado nele."
+                "description": "Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita). Quem já aparece baixada no primeiro cadastro conta como MEI se as datas de opção e de exclusão do MEI mostram que era MEI no dia da baixa."
               }
             }
           },

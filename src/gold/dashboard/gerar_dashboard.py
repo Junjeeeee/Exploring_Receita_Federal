@@ -220,22 +220,33 @@ FROM {FATO}
 WHERE teve_baixa_mes
 GROUP BY ALL
 """),
-    # Mesma população de teve_baixa_mes (matriz que termina o mês BAIXADA sem estar BAIXADA antes, inclusive a
-    # primeira aparição já BAIXADA, que na OBT vem com anterior INEXISTENTE — D-17), contada pela OBT para ter a
-    # categoria do motivo (regra única em dim_mudanca_estado). O total fecha com o fato (dq_gold.sql, 2b).
-    "baixas_motivo": ("Baixas de matriz por categoria de motivo", """
+    # População e atributos (UF, porte, área) do FATO (teve_baixa_mes: mesmo porte de baixa dos outros widgets,
+    # inclusive o MEI que já aparece BAIXADA — D-17b); da OBT vem só a categoria do motivo (regra única em
+    # dim_mudanca_estado), pelo mesmo critério: matriz que termina BAIXADA sem estar BAIXADA antes (anterior
+    # INEXISTENTE = primeira aparição, D-17). Os dois lados fecham (dq_gold.sql, 2b); se a OBT não tiver o evento,
+    # a baixa aparece como NAO IDENTIFICADO em vez de sumir. Uma categoria por empresa e mês.
+    "baixas_motivo": ("Baixas de matriz por categoria de motivo", f"""
+WITH motivo AS (
+    SELECT mes_referencia, cnpj_raiz, MAX(categoria_macro_evento) AS categoria_macro_evento
+    FROM tcc_receita.gold.obt_dashboard_eventos
+    WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'
+      AND eh_matriz = TRUE
+      AND situacao_cadastral_posterior = 'BAIXADA'
+      AND situacao_cadastral_anterior <> 'BAIXADA'
+    GROUP BY mes_referencia, cnpj_raiz
+)
 SELECT
-    data_referencia,
-    uf,
-    porte_empresa,
-    grande_area_cnae,
-    categoria_macro_evento,
-    COUNT(DISTINCT cnpj_raiz) AS qtd_empresas
-FROM tcc_receita.gold.obt_dashboard_eventos
-WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'
-  AND eh_matriz = TRUE
-  AND situacao_cadastral_posterior = 'BAIXADA'
-  AND situacao_cadastral_anterior <> 'BAIXADA'
+    f.data_referencia,
+    f.uf,
+    f.porte_empresa,
+    f.grande_area_cnae,
+    COALESCE(m.categoria_macro_evento, 'NAO IDENTIFICADO') AS categoria_macro_evento,
+    COUNT(*) AS qtd_empresas
+FROM {FATO} f
+LEFT JOIN motivo m
+  ON m.mes_referencia = f.mes_referencia
+ AND m.cnpj_raiz = f.cnpj_raiz
+WHERE f.teve_baixa_mes
 GROUP BY ALL
 """),
     # OBT: eventos de todos os tipos (empresa, sócio, CNAE...). NÃO é fonte de aberturas.
@@ -565,7 +576,8 @@ PAGINA_QUEM = [
      pos(0, 4, 3, 3)),
     (contador("c2_mei_bx", "% das baixas que são MEI", "fluxos_empresa", media("pct_mei_baixa"),
               descricao="Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita). "
-                        "Quem já aparece baixada no primeiro cadastro fica com o porte registrado nele."),
+                        "Quem já aparece baixada no primeiro cadastro conta como MEI se as datas de opção e de "
+                        "exclusão do MEI mostram que era MEI no dia da baixa."),
      pos(3, 4, 3, 3)),
     (tabela("t2_setor_extremos", "Setor que mais cresce e setor que menos cresce", "extremos_setor", [
         ("posicao", "Posição"), ("grande_area_cnae", "Setor"), ("taxa_saldo_por_mil", f"{CRESC_MIL} (por mês)"),
