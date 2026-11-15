@@ -146,25 +146,28 @@
     },
     {
       "name": "fluxos_empresa",
-      "displayName": "Aberturas e baixas, uma linha por empresa",
+      "displayName": "Aberturas e baixas, uma linha por empresa e tipo",
       "queryLines": [
         "SELECT\n",
-        "    mes_referencia,\n",
-        "    data_referencia,\n",
-        "    uf,\n",
-        "    porte_empresa,\n",
-        "    grande_area_cnae,\n",
-        "    CASE WHEN teve_abertura_mes THEN 'Aberturas' ELSE 'Baixas' END AS fluxo,\n",
+        "    f.mes_referencia,\n",
+        "    f.data_referencia,\n",
+        "    f.uf,\n",
+        "    f.porte_empresa,\n",
+        "    f.grande_area_cnae,\n",
+        "    t.fluxo,\n",
         "    1 AS qtd,\n",
-        "    CASE WHEN teve_abertura_mes THEN IF(porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,\n",
-        "    CASE WHEN teve_baixa_mes    THEN IF(porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,\n",
-        "    CASE WHEN teve_baixa_mes    THEN IF(teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,\n",
+        "    CASE WHEN t.fluxo = 'Aberturas' THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,\n",
+        "    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,\n",
+        "    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,\n",
         "    -- Idade na baixa pela data real (data da baixa − início de atividade); NULL = sem data, fora da mediana.\n",
-        "    idade_na_baixa_meses / 12.0 AS idade_baixa_anos,\n",
-        "    CASE WHEN idade_na_baixa_meses IS NOT NULL THEN IF(idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos\n",
-        "FROM tcc_receita.gold.fato_empresa_mes\n",
+        "    CASE WHEN t.fluxo = 'Baixas'    THEN f.idade_na_baixa_meses / 12.0 END AS idade_baixa_anos,\n",
+        "    CASE WHEN t.fluxo = 'Baixas' AND f.idade_na_baixa_meses IS NOT NULL\n",
+        "         THEN IF(f.idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos\n",
+        "FROM tcc_receita.gold.fato_empresa_mes f\n",
+        "JOIN (SELECT 'Aberturas' AS fluxo UNION ALL SELECT 'Baixas') t\n",
+        "  ON (t.fluxo = 'Aberturas' AND f.teve_abertura_mes) OR (t.fluxo = 'Baixas' AND f.teve_baixa_mes)\n",
         "WHERE mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)\n",
-        "  AND (teve_abertura_mes OR teve_baixa_mes)\n"
+        "  AND (f.teve_abertura_mes OR f.teve_baixa_mes)\n"
       ]
     },
     {
@@ -192,7 +195,7 @@
         "WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'\n",
         "  AND eh_matriz = TRUE\n",
         "  AND situacao_cadastral_posterior = 'BAIXADA'\n",
-        "  AND situacao_cadastral_anterior NOT IN ('BAIXADA', 'INEXISTENTE')\n",
+        "  AND situacao_cadastral_anterior <> 'BAIXADA'\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -808,7 +811,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Baixas no último mês"
+                "title": "Baixas no último mês",
+                "showDescription": true,
+                "description": "Inclui empresas que abriram e foram baixadas antes de aparecer no cadastro mensal: contam como abertura e como baixa no mesmo mês."
               }
             }
           },
@@ -1415,7 +1420,7 @@
                 "showTitle": true,
                 "title": "% das baixas que são MEI",
                 "showDescription": true,
-                "description": "Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."
+                "description": "Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita). Quem já aparece baixada no primeiro cadastro fica com o porte registrado nele."
               }
             }
           },
@@ -3457,6 +3462,7 @@
                 "- **Mês da mudança × data real.** Toda contagem mensal usa o mês em que a mudança apareceu pela primeira vez no cadastro mensal publicado pela Receita. Esse cadastro é extraído por volta do dia 10, então o mês M cobre, aproximadamente, de meados de M−1 a meados de M. A **data real** declarada pela Receita só é usada para calcular idade (ex.: idade na baixa), nunca para contar quantas mudanças houve no mês.\n",
                 "- **Empresa = matriz** do CNPJ (os 8 primeiros dígitos). Mudanças de filiais são registradas, mas não entram nos números de empresas.\n",
                 "- **Empresas ativas** = matrizes com situação cadastral ATIVA. **Passaram a estar ativas** = aberturas e reativações. **Deixaram de estar ativas** = baixas, inaptidões, suspensões e anulações de empresas que estavam ativas. **Crescimento líquido** = a diferença entre os dois; somado às ativas do mês anterior, dá exatamente as ativas do mês.\n",
+                "- **Abertura e baixa no mesmo mês.** Uma empresa que abre e é baixada entre duas publicações mensais da Receita já aparece baixada no primeiro cadastro em que surge: ela conta como abertura **e** como baixa naquele mês. Como nunca esteve ativa num cadastro publicado, não entra no crescimento líquido nem nas baixas por 1.000 ativas (que contam só empresas ativas no início do mês). O mesmo vale para quem já aparece inapta ou suspensa.\n",
                 "- **Motivos de baixa** vêm do código registrado pela Receita: falência/liquidação judicial = motivos 05, 06 e 10; óbito do MEI = 75; baixa voluntária = 01, 37, 54; de ofício = 13, 14, 15, 63, 64, 66, 71, 73.\n",
                 "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Comparações entre UFs e setores só incluem grupos com média de pelo menos 100 ativas.\n",
                 "- **Limites.** Só há três meses com movimentação (jun–ago/2023): maio/2023 é a primeira carga e serve só de ponto de partida. Setor (grande área) é um agrupamento provisório de CNAE. Nenhum CPF, nome de sócio ou razão social de MEI/empresário individual aparece no painel (LGPD).\n",
@@ -3468,7 +3474,7 @@
             "x": 0,
             "y": 0,
             "width": 12,
-            "height": 10
+            "height": 12
           }
         },
         {
@@ -3534,7 +3540,7 @@
           },
           "position": {
             "x": 0,
-            "y": 10,
+            "y": 12,
             "width": 12,
             "height": 6
           }

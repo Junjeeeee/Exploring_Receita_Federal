@@ -187,27 +187,32 @@ WHERE {SEM_CARGA_INICIAL}
 GROUP BY ALL
 """),
 
-    # --- páginas 2 e 4: uma linha por empresa × mês com abertura ou baixa ----------------------------
+    # --- páginas 2 e 4: uma linha por empresa × mês × (abertura | baixa) -----------------------------
     # Os percentuais são AVG das colunas pct_* (100 = sim, 0 = não, NULL = não se aplica e fica fora da média).
     # Sem CNPJ nem nome: só os atributos usados pelos filtros e pelos indicadores.
-    "fluxos_empresa": ("Aberturas e baixas, uma linha por empresa", f"""
+    # Empresa que abre e já aparece BAIXADA (D-17) tem as duas flags no mesmo mês: gera DUAS linhas (uma em
+    # 'Aberturas', outra em 'Baixas'), e as colunas de baixa só são preenchidas na linha 'Baixas'.
+    "fluxos_empresa": ("Aberturas e baixas, uma linha por empresa e tipo", f"""
 SELECT
-    mes_referencia,
-    data_referencia,
-    uf,
-    porte_empresa,
-    grande_area_cnae,
-    CASE WHEN teve_abertura_mes THEN 'Aberturas' ELSE 'Baixas' END AS fluxo,
+    f.mes_referencia,
+    f.data_referencia,
+    f.uf,
+    f.porte_empresa,
+    f.grande_area_cnae,
+    t.fluxo,
     1 AS qtd,
-    CASE WHEN teve_abertura_mes THEN IF(porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,
-    CASE WHEN teve_baixa_mes    THEN IF(porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,
-    CASE WHEN teve_baixa_mes    THEN IF(teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,
+    CASE WHEN t.fluxo = 'Aberturas' THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,
+    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,
+    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,
     -- Idade na baixa pela data real (data da baixa − início de atividade); NULL = sem data, fora da mediana.
-    idade_na_baixa_meses / 12.0 AS idade_baixa_anos,
-    CASE WHEN idade_na_baixa_meses IS NOT NULL THEN IF(idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos
-FROM {FATO}
+    CASE WHEN t.fluxo = 'Baixas'    THEN f.idade_na_baixa_meses / 12.0 END AS idade_baixa_anos,
+    CASE WHEN t.fluxo = 'Baixas' AND f.idade_na_baixa_meses IS NOT NULL
+         THEN IF(f.idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos
+FROM {FATO} f
+JOIN (SELECT 'Aberturas' AS fluxo UNION ALL SELECT 'Baixas') t
+  ON (t.fluxo = 'Aberturas' AND f.teve_abertura_mes) OR (t.fluxo = 'Baixas' AND f.teve_baixa_mes)
 WHERE {SEM_CARGA_INICIAL}
-  AND (teve_abertura_mes OR teve_baixa_mes)
+  AND (f.teve_abertura_mes OR f.teve_baixa_mes)
 """),
     "baixas_idade": ("Baixas por faixa de idade na baixa", f"""
 SELECT data_referencia, uf, porte_empresa, grande_area_cnae, faixa_idade_baixa, COUNT(*) AS qtd_baixas
@@ -215,8 +220,9 @@ FROM {FATO}
 WHERE teve_baixa_mes
 GROUP BY ALL
 """),
-    # Mesma população de teve_baixa_mes (matriz que existia no mês anterior sem estar BAIXADA), contada pela
-    # OBT para ter a categoria do motivo (regra única em dim_mudanca_estado).
+    # Mesma população de teve_baixa_mes (matriz que termina o mês BAIXADA sem estar BAIXADA antes, inclusive a
+    # primeira aparição já BAIXADA, que na OBT vem com anterior INEXISTENTE — D-17), contada pela OBT para ter a
+    # categoria do motivo (regra única em dim_mudanca_estado). O total fecha com o fato (dq_gold.sql, 2b).
     "baixas_motivo": ("Baixas de matriz por categoria de motivo", """
 SELECT
     data_referencia,
@@ -229,7 +235,7 @@ FROM tcc_receita.gold.obt_dashboard_eventos
 WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'
   AND eh_matriz = TRUE
   AND situacao_cadastral_posterior = 'BAIXADA'
-  AND situacao_cadastral_anterior NOT IN ('BAIXADA', 'INEXISTENTE')
+  AND situacao_cadastral_anterior <> 'BAIXADA'
 GROUP BY ALL
 """),
     # OBT: eventos de todos os tipos (empresa, sócio, CNAE...). NÃO é fonte de aberturas.
@@ -496,6 +502,9 @@ AREA = "Setor (grande área)"
 CRESC_MIL = "Crescimento líquido por 1.000 ativas"
 DEF_CRESC = ("Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que "
              "deixaram de estar ativas (baixas, inaptidões, suspensões).")
+# D-17: quem abre e fecha entre duas publicações mensais já aparece baixada; conta nos dois números.
+DEF_ABRE_FECHA = ("Inclui empresas que abriram e foram baixadas antes de aparecer no cadastro mensal: contam como "
+                  "abertura e como baixa no mesmo mês.")
 
 # 1. Resumo -------------------------------------------------------------------------------------
 P1 = ["resumo_mes", "estoque_mes", "painel"]
@@ -514,7 +523,8 @@ PAGINA_RESUMO = [
      pos(0, 5, 3, 3)),
     (contador("c1_aberturas", "Aberturas no último mês", "resumo_mes", soma("aberturas_ultimo_mes")),
      pos(3, 5, 2, 3)),
-    (contador("c1_baixas", "Baixas no último mês", "resumo_mes", soma("baixas_ultimo_mes")), pos(5, 5, 2, 3)),
+    (contador("c1_baixas", "Baixas no último mês", "resumo_mes", soma("baixas_ultimo_mes"), descricao=DEF_ABRE_FECHA),
+     pos(5, 5, 2, 3)),
     (contador("c1_saldo", "Crescimento líquido no último mês", "resumo_mes", soma("saldo_ultimo_mes"),
               descricao=DEF_CRESC), pos(7, 5, 2, 3)),
     (contador("c1_ab_por_baixa", "Aberturas por baixa no último mês (Brasil, não muda com os filtros)",
@@ -554,7 +564,8 @@ PAGINA_QUEM = [
     (contador("c2_mei_ab", "% das aberturas que são MEI", "fluxos_empresa", media("pct_mei_abertura")),
      pos(0, 4, 3, 3)),
     (contador("c2_mei_bx", "% das baixas que são MEI", "fluxos_empresa", media("pct_mei_baixa"),
-              descricao="Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita)."),
+              descricao="Para quem estava ativa, vale o porte de antes da baixa (o MEI baixado vira ME na Receita). "
+                        "Quem já aparece baixada no primeiro cadastro fica com o porte registrado nele."),
      pos(3, 4, 3, 3)),
     (tabela("t2_setor_extremos", "Setor que mais cresce e setor que menos cresce", "extremos_setor", [
         ("posicao", "Posição"), ("grande_area_cnae", "Setor"), ("taxa_saldo_por_mil", f"{CRESC_MIL} (por mês)"),
@@ -686,6 +697,11 @@ PAGINA_SOBRE = [
         "reativações. **Deixaram de estar ativas** = baixas, inaptidões, suspensões e anulações de empresas que "
         "estavam ativas. **Crescimento líquido** = a diferença entre os dois; somado às ativas do mês anterior, dá "
         "exatamente as ativas do mês.",
+        "- **Abertura e baixa no mesmo mês.** Uma empresa que abre e é baixada entre duas publicações mensais da "
+        "Receita já aparece baixada no primeiro cadastro em que surge: ela conta como abertura **e** como baixa "
+        "naquele mês. Como nunca esteve ativa num cadastro publicado, não entra no crescimento líquido nem nas "
+        "baixas por 1.000 ativas (que contam só empresas ativas no início do mês). O mesmo vale para quem já "
+        "aparece inapta ou suspensa.",
         "- **Motivos de baixa** vêm do código registrado pela Receita: falência/liquidação judicial = motivos 05, "
         "06 e 10; óbito do MEI = 75; baixa voluntária = 01, 37, 54; de ofício = 13, 14, 15, 63, 64, 66, 71, 73.",
         "- **Taxas** são por 1.000 empresas ativas no início do mês (média mensal do período). Comparações entre "
@@ -695,11 +711,11 @@ PAGINA_SOBRE = [
         "razão social de MEI/empresário individual aparece no painel (LGPD).",
         "- **Filtros** valem só na própria página. Taxas e comparações por setor/UF são do Brasil e não mudam com "
         "filtros.",
-    ]), pos(0, 0, 12, 10)),
+    ]), pos(0, 0, 12, 12)),
     (linha("l6_macro", "Contexto econômico do período: Selic e inflação em 12 meses (% ao ano)", "macro", mes(), [
         (soma("selic_anualizada_media_pct"), "Selic média"), (soma("ipca_acumulado_12m_pct"), "IPCA 12 meses"),
     ], descricao="Só contexto: três meses não permitem tirar conclusão de causa. Fonte: Banco Central."),
-     pos(0, 10, 12, 6)),
+     pos(0, 12, 12, 6)),
 ]
 
 PAGINAS = [
