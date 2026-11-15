@@ -12,6 +12,7 @@ Como os números respeitam os filtros (filtro de campo = WHERE nas linhas do dat
 - taxas por 1.000 ativas são razões de somas: vêm prontas do dataset e só reagem aos filtros que o dataset tem.
 """
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -31,9 +32,10 @@ SEM_CARGA_INICIAL = f"mes_referencia > (SELECT MIN(mes_referencia) FROM {FATO})"
 # Bairro exibido no "Mercado ativo": nulo ou vazio vira rótulo explícito (não some do filtro nem das somas).
 BAIRRO = "COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO')"
 
-# Ordem das séries de cor por porte: maior volume primeiro (base da pilha e topo da legenda). Fixa porque a
-# hierarquia é estável (amostra jun–ago/2023: MEI > ME > DEMAIS > EPP, nas aberturas e nas baixas).
-ORDEM_PORTE = ["MEI", "ME", "DEMAIS", "EPP", "NAO INFORMADO", "NAO IDENTIFICADO"]
+# Ordem das séries de cor por porte. Fixa porque a hierarquia é estável (amostra jun–ago/2023:
+# MEI > ME > DEMAIS > EPP, nas aberturas e nas baixas). No Lakeview o PRIMEIRO valor da lista vai para o TOPO da
+# pilha (conferido na tela pelo autor), por isso a lista vai do menor para o maior: MEI fica na base.
+ORDEM_PORTE = ["NAO IDENTIFICADO", "NAO INFORMADO", "EPP", "DEMAIS", "ME", "MEI"]
 # Faixas de idade: ordem natural (da mais nova para a mais velha), não por volume.
 ORDEM_FAIXA_IDADE = ["00-01 ano", "01-02 anos", "02-05 anos", "05-10 anos", "10+ anos", "sem data"]
 
@@ -357,10 +359,16 @@ def mediana(coluna):
     return {"name": f"median({coluna})", "expression": f"PERCENTILE(`{coluna}`, 0.5)"}
 
 
-def razao(numerador, denominador):
-    # Razão de somas. ÚNICO campo com expressão composta (risco de formato: ver spec § 2.1).
-    return {"name": f"razao({numerador},{denominador})",
-            "expression": f"try_divide(SUM(`{numerador}`), SUM(`{denominador}`))"}
+def razao(nome, numerador, denominador, forma="divisao"):
+    """Razão de somas no widget. ÚNICO campo com expressão composta (risco de formato: ver spec § 2.1).
+    A prévia mostrou que `try_divide(SUM, SUM)` com nome "razao(a,b)" NÃO desenha ("Select fields to visualize").
+    Forma oficial: `SUM(a) / SUM(b)` com nome simples (sem parênteses nem vírgula), o mais parecido possível com
+    os contadores que desenham. As outras formas existem só para a página de teste."""
+    expressoes = {
+        "divisao": f"SUM(`{numerador}`) / SUM(`{denominador}`)",
+        "try_divide": f"try_divide(SUM(`{numerador}`), SUM(`{denominador}`))",
+    }
+    return {"name": nome, "expression": expressoes[forma]}
 
 
 def coluna(nome):
@@ -395,6 +403,18 @@ def contador(nome, titulo, dataset, campo, descricao=None):
         "queries": [_query(dataset, [campo])],
         "spec": {"version": 2, "widgetType": "counter",
                  "encodings": {"value": {"fieldName": campo["name"], "displayName": titulo}},
+                 "frame": _frame(titulo, descricao)},
+    }
+
+
+def contador_desagregado(nome, titulo, dataset, campo, descricao=None):
+    """Contador que mostra o valor de uma coluna sem agregar (dataset de uma linha). Mesma forma do contador
+    "30 Day Growth %" do dashboard de exemplo exportado pela Databricks."""
+    return {
+        "name": nome,
+        "queries": [_query(dataset, [coluna(campo)], desagregado=True)],
+        "spec": {"version": 2, "widgetType": "counter",
+                 "encodings": {"value": {"fieldName": campo, "displayName": titulo}},
                  "frame": _frame(titulo, descricao)},
     }
 
@@ -509,7 +529,7 @@ PAGINA_RESUMO = [
     (contador("c1_saldo", "Crescimento líquido no último mês", "resumo_mes", soma("saldo_ultimo_mes"),
               descricao=DEF_CRESC), pos(7, 5, 2, 3)),
     (contador("c1_ab_por_baixa", "Aberturas por baixa no último mês", "resumo_mes",
-              razao("aberturas_ultimo_mes", "baixas_ultimo_mes"),
+              razao("aberturas_por_baixa", "aberturas_ultimo_mes", "baixas_ultimo_mes"),
               descricao="Acima de 1: abrem mais empresas do que fecham."), pos(9, 5, 3, 3)),
 
     (contador("c1_ativas_d", DELTA, "resumo_mes", soma("ativas_delta"),
@@ -519,7 +539,8 @@ PAGINA_RESUMO = [
     (contador("c1_baixas_d", DELTA, "resumo_mes", soma("baixas_delta")), pos(5, 8, 2, 2)),
     (contador("c1_saldo_d", DELTA, "resumo_mes", soma("saldo_delta")), pos(7, 8, 2, 2)),
     (contador("c1_ab_por_baixa_ant", "Aberturas por baixa no mês anterior", "resumo_mes",
-              razao("aberturas_mes_anterior", "baixas_mes_anterior")), pos(9, 8, 3, 2)),
+              razao("aberturas_por_baixa_anterior", "aberturas_mes_anterior", "baixas_mes_anterior")),
+     pos(9, 8, 3, 2)),
 
     (linha("l1_estoque", "O número de empresas ativas cresce mês a mês?", "estoque_mes", mes(),
            [(soma("estoque_final_ativas"), "Empresas ativas")],
@@ -709,12 +730,40 @@ def _pagina(nome, titulo, widgets):
             "pageType": "PAGE_TYPE_CANVAS", "layoutVersion": "GRID_V1"}
 
 
-def montar_dashboard() -> dict:
+# --- página TEMPORÁRIA de teste (só na prévia; o JSON commitado não a leva) ------------------------
+# Objetivo: o autor olha uma vez e diz qual forma de "aberturas por baixa" o Lakeview desenha.
+DATASETS_TESTE = {
+    # Razão já calculada em SQL, Brasil, uma linha (não reage a filtro): plano de reserva garantido.
+    "teste_razao_brasil": ("TESTE: aberturas por baixa calculada em SQL (Brasil)", f"""
+SELECT ROUND(SUM(aberturas_ultimo_mes) / NULLIF(SUM(baixas_ultimo_mes), 0), 2) AS aberturas_por_baixa_brasil
+FROM ({DATASETS["resumo_mes"][1].strip()})
+"""),
+}
+COLUNAS_TESTE = {"teste_razao_brasil": ["aberturas_por_baixa_brasil"]}
+
+PAGINA_TESTE = [
+    (abertura("t_texto", "Teste (apagar): qual forma do contador desenha?",
+              "Os quatro contadores deveriam mostrar o mesmo número (aberturas por baixa no último mês, Brasil). "
+              "Diga quais aparecem e quais mostram 'Select fields to visualize'."), pos(0, 0, 12, 3)),
+    (contador("t_a", "A: SUM(a) / SUM(b) no widget (forma usada na página 1; reage a filtro)", "resumo_mes",
+              razao("teste_a", "aberturas_ultimo_mes", "baixas_ultimo_mes", forma="divisao")), pos(0, 3, 3, 4)),
+    (contador("t_b", "B: try_divide(SUM(a), SUM(b)) com nome simples (reage a filtro)", "resumo_mes",
+              razao("teste_b", "aberturas_ultimo_mes", "baixas_ultimo_mes", forma="try_divide")), pos(3, 3, 3, 4)),
+    (contador("t_c", "C: razão calculada em SQL, SUM de 1 linha (Brasil, sem filtro)", "teste_razao_brasil",
+              soma("aberturas_por_baixa_brasil")), pos(6, 3, 3, 4)),
+    (contador_desagregado("t_d", "D: razão calculada em SQL, coluna sem agregação (Brasil, sem filtro)",
+                          "teste_razao_brasil", "aberturas_por_baixa_brasil"), pos(9, 3, 3, 4)),
+]
+
+
+def montar_dashboard(com_pagina_teste: bool = False) -> dict:
+    fontes = {**DATASETS, **(DATASETS_TESTE if com_pagina_teste else {})}
+    paginas = PAGINAS + ([("teste", "Teste (apagar)", PAGINA_TESTE)] if com_pagina_teste else [])
     datasets = [
         {"name": nome, "displayName": titulo, "queryLines": [l + "\n" for l in sql.strip().splitlines()]}
-        for nome, (titulo, sql) in DATASETS.items()
+        for nome, (titulo, sql) in fontes.items()
     ]
-    return {"datasets": datasets, "pages": [_pagina(n, t, w) for n, t, w in PAGINAS]}
+    return {"datasets": datasets, "pages": [_pagina(n, t, w) for n, t, w in paginas]}
 
 
 # --- validação local ----------------------------------------------------------------------------
@@ -724,17 +773,19 @@ AGREGACOES = ("SUM(", "AVG(", "PERCENTILE(", "try_divide(SUM(")
 JARGAO = r"\b(estoque|saldo|fluxos?|snapshot|baseline|detec[çc][ãa]o)\b|Δ"
 
 
-def validar(dash: dict) -> None:
+def validar(dash: dict, com_pagina_teste: bool = False) -> None:
     """Falha (SystemExit) com mensagem clara se o JSON tiver referência quebrada, widget sobreposto, página sem
     texto de abertura, contador sem agregação, dataset sem uso ou nome de widget repetido."""
     erros = []
+    fontes = {**DATASETS, **(DATASETS_TESTE if com_pagina_teste else {})}
+    colunas = {**COLUNAS, **(COLUNAS_TESTE if com_pagina_teste else {})}
 
     # 1. o dicionário COLUNAS tem de bater com o texto do SELECT (cada coluna aparece como palavra inteira)
-    for nome, (_, sql) in DATASETS.items():
-        if nome not in COLUNAS:
+    for nome, (_, sql) in fontes.items():
+        if nome not in colunas:
             erros.append(f"dataset '{nome}' sem entrada em COLUNAS")
             continue
-        for c in COLUNAS[nome]:
+        for c in colunas[nome]:
             if not re.search(rf"\b{c}\b", sql):
                 erros.append(f"dataset '{nome}': coluna '{c}' não aparece no SELECT")
 
@@ -756,19 +807,20 @@ def validar(dash: dict) -> None:
             for q in w.get("queries", []):
                 d = q["query"]["datasetName"]
                 usados.add(d)
-                if d not in COLUNAS:
+                if d not in colunas:
                     erros.append(f"{nome}: dataset '{d}' não existe")
                     continue
                 campos_por_query[q["name"]] = {f["name"] for f in q["query"]["fields"]}
                 for f in q["query"]["fields"]:
                     for col in re.findall(r"`(\w+)`", f["expression"]):
-                        if col not in COLUNAS[d]:
+                        if col not in colunas[d]:
                             erros.append(f"{nome}: dataset '{d}' não tem a coluna '{col}'")
             if "queries" in w:
                 erros += _validar_encodings(nome, w["spec"]["encodings"], campos_por_query)
                 # 3. contador agrega (senão mostraria um valor arbitrário de uma linha)
-                if w["spec"]["widgetType"] == "counter":
-                    for f in w["queries"][0]["query"]["fields"]:
+                consulta = w["queries"][0]["query"]
+                if w["spec"]["widgetType"] == "counter" and not consulta["disaggregated"]:
+                    for f in consulta["fields"]:
                         if not f["expression"].startswith(AGREGACOES):
                             erros.append(f"{nome}: contador sem agregação ({f['expression']})")
 
@@ -777,6 +829,16 @@ def validar(dash: dict) -> None:
                 if (a["x"] < b["x"] + b["width"] and b["x"] < a["x"] + a["width"]
                         and a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]):
                     erros.append(f"{pagina['name']}: '{n1}' e '{n2}' se sobrepõem")
+
+    # 3b. formas que a prévia mostrou NÃO desenhar: try_divide e nome de campo com vírgula (fora da página de teste)
+    for pagina in dash["pages"]:
+        if pagina["name"] == "teste":
+            continue
+        for item in pagina["layout"]:
+            for q in item["widget"].get("queries", []):
+                for f in q["query"]["fields"]:
+                    if "try_divide" in f["expression"] or "," in f["name"]:
+                        erros.append(f"{item['widget']['name']}: forma de campo que não desenha ({f['name']})")
 
     # 4. sem jargão no texto exibido (títulos, rótulos, descrições, caixas de texto); nomes de coluna não contam
     for pagina in dash["pages"]:
@@ -789,7 +851,7 @@ def validar(dash: dict) -> None:
     repetidos = {n for n in nomes_widgets if nomes_widgets.count(n) > 1}
     if repetidos:
         erros.append(f"nomes de widget repetidos: {sorted(repetidos)}")
-    for d in sorted(set(DATASETS) - usados):
+    for d in sorted(set(fontes) - usados):
         erros.append(f"dataset '{d}' não é usado por nenhum widget")
 
     if erros:
@@ -839,10 +901,19 @@ def _validar_encodings(widget, encodings, campos_por_query):
 
 
 def main() -> None:
-    dash = montar_dashboard()
-    validar(dash)
-    SAIDA.write_text(json.dumps(dash, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"✅ {SAIDA.relative_to(RAIZ)} gerado.")
+    parser = argparse.ArgumentParser(description="Gera o JSON do dashboard a partir da gold.")
+    parser.add_argument("--com-pagina-teste", action="store_true",
+                        help="inclui a página temporária 'Teste (apagar)'; só para publicar a prévia")
+    parser.add_argument("--saida", default=str(SAIDA), help="arquivo de saída (padrão: o JSON versionado)")
+    args = parser.parse_args()
+    saida = Path(args.saida).resolve()
+    if args.com_pagina_teste and saida == SAIDA:
+        parser.error("com --com-pagina-teste, informe --saida fora do repositório: o JSON versionado não leva a "
+                     "página de teste")
+    dash = montar_dashboard(args.com_pagina_teste)
+    validar(dash, args.com_pagina_teste)
+    saida.write_text(json.dumps(dash, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"✅ {saida} gerado.")
 
 
 if __name__ == "__main__":

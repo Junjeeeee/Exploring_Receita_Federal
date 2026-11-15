@@ -819,8 +819,8 @@
                   "datasetName": "resumo_mes",
                   "fields": [
                     {
-                      "name": "razao(aberturas_ultimo_mes,baixas_ultimo_mes)",
-                      "expression": "try_divide(SUM(`aberturas_ultimo_mes`), SUM(`baixas_ultimo_mes`))"
+                      "name": "aberturas_por_baixa",
+                      "expression": "SUM(`aberturas_ultimo_mes`) / SUM(`baixas_ultimo_mes`)"
                     }
                   ],
                   "disaggregated": false
@@ -832,7 +832,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "razao(aberturas_ultimo_mes,baixas_ultimo_mes)",
+                  "fieldName": "aberturas_por_baixa",
                   "displayName": "Aberturas por baixa no último mês"
                 }
               },
@@ -1023,8 +1023,8 @@
                   "datasetName": "resumo_mes",
                   "fields": [
                     {
-                      "name": "razao(aberturas_mes_anterior,baixas_mes_anterior)",
-                      "expression": "try_divide(SUM(`aberturas_mes_anterior`), SUM(`baixas_mes_anterior`))"
+                      "name": "aberturas_por_baixa_anterior",
+                      "expression": "SUM(`aberturas_mes_anterior`) / SUM(`baixas_mes_anterior`)"
                     }
                   ],
                   "disaggregated": false
@@ -1036,7 +1036,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "razao(aberturas_mes_anterior,baixas_mes_anterior)",
+                  "fieldName": "aberturas_por_baixa_anterior",
                   "displayName": "Aberturas por baixa no mês anterior"
                 }
               },
@@ -1488,12 +1488,12 @@
                     "sort": {
                       "by": "custom-order",
                       "orderedValues": [
-                        "MEI",
-                        "ME",
-                        "DEMAIS",
-                        "EPP",
+                        "NAO IDENTIFICADO",
                         "NAO INFORMADO",
-                        "NAO IDENTIFICADO"
+                        "EPP",
+                        "DEMAIS",
+                        "ME",
+                        "MEI"
                       ]
                     }
                   },
