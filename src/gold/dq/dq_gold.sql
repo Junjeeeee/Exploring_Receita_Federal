@@ -59,6 +59,14 @@ metricas_mes AS (
         COUNT_IF(f.saiu_estoque_mes) AS saidas,
         COUNT_IF(f.teve_abertura_mes) AS aberturas,
         COUNT_IF(f.teve_baixa_mes AND f.situacao_cadastral <> 'BAIXADA') AS baixas_incoerentes,
+        -- D-17: primeira aparição já BAIXADA/INAPTA/SUSPENSA tem abertura E o evento da situação; e evento de
+        -- situação sem mês anterior só existe na primeira aparição.
+        COUNT_IF(f.teve_abertura_mes
+                 AND ((f.situacao_cadastral = 'BAIXADA'  AND NOT f.teve_baixa_mes)
+                   OR (f.situacao_cadastral = 'INAPTA'   AND NOT f.teve_inaptidao_mes)
+                   OR (f.situacao_cadastral = 'SUSPENSA' AND NOT f.teve_suspensao_mes))) AS primeira_aparicao_sem_evento,
+        COUNT_IF((f.teve_baixa_mes OR f.teve_inaptidao_mes OR f.teve_suspensao_mes)
+                 AND f.situacao_inicio_mes IS NULL AND NOT f.teve_abertura_mes) AS evento_sem_mes_anterior,
         COUNT_IF(f.ativa_inicio_mes OR f.teve_abertura_mes OR f.teve_reativacao_mes OR f.entrou_estoque_mes
                  OR f.saiu_estoque_mes OR f.teve_baixa_mes OR f.teve_falencia_mes OR f.teve_inaptidao_mes
                  OR f.teve_suspensao_mes) AS linhas_com_fluxo,
@@ -116,6 +124,8 @@ resumo AS (
                              ' final(M-1)=', CAST(estoque_final_mes_anterior AS STRING)) END) AS exemplo_continuidade,
         -- (4) Baixa só com situação final BAIXADA.
         COALESCE(SUM(baixas_incoerentes), 0) AS baixas_incoerentes,
+        COALESCE(SUM(primeira_aparicao_sem_evento), 0) AS primeira_aparicao_sem_evento,
+        COALESCE(SUM(evento_sem_mes_anterior), 0) AS evento_sem_mes_anterior,
         -- (5) Baseline sem fluxo nenhum (nem ativa_inicio).
         COALESCE(SUM(CASE WHEN eh_baseline THEN linhas_com_fluxo ELSE 0 END), 0) AS linhas_com_fluxo_no_baseline,
         -- (7) UF com 2 letras (o rótulo de desconhecido NI também tem 2 letras).
@@ -158,6 +168,12 @@ SELECT
     ASSERT_TRUE(r.baixas_incoerentes = 0,
         CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.baixas_incoerentes AS STRING),
                ' linhas com teve_baixa_mes e situacao_cadastral diferente de BAIXADA.')),
+    ASSERT_TRUE(r.primeira_aparicao_sem_evento = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.primeira_aparicao_sem_evento AS STRING),
+               ' aberturas ja BAIXADA/INAPTA/SUSPENSA sem a flag do evento correspondente (D-17).')),
+    ASSERT_TRUE(r.evento_sem_mes_anterior = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.evento_sem_mes_anterior AS STRING),
+               ' baixas/inaptidoes/suspensoes sem mes anterior fora da primeira aparicao.')),
     ASSERT_TRUE(r.linhas_com_fluxo_no_baseline = 0,
         CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.linhas_com_fluxo_no_baseline AS STRING),
                ' linhas do baseline com flag de fluxo ou ativa_inicio_mes TRUE.')),
@@ -177,6 +193,54 @@ SELECT
                ' baixas sem idade (data de inicio ou da baixa ausente, ou baixa antes do inicio); limite 5%.'))
 FROM resumo r
 CROSS JOIN duplicados d;
+
+-- 2b. Baixas: fato_empresa_mes × OBT. O dashboard mostra o total de baixas pelo fato e o motivo pela OBT
+--     (dataset baixas_motivo: matriz que termina BAIXADA sem estar BAIXADA antes, inclusive a primeira aparição,
+--     que na OBT vem com situação anterior INEXISTENTE). Os dois totais têm de fechar. Na amostra fecham com
+--     diferença zero; o limite de 0,5% por mês [padrão] tolera casos de borda das duas origens (evento por
+--     estabelecimento marcado matriz × matriz canônica da dim_empresa; buraco na linha do tempo).
+WITH params AS (
+    SELECT '{{mes_referencia_inicial}}' AS mes_ini, '{{mes_referencia_final}}' AS mes_fim
+),
+baixas_fato AS (
+    SELECT f.mes_referencia, COUNT_IF(f.teve_baixa_mes) AS qtd
+    FROM tcc_receita.gold.fato_empresa_mes f
+    CROSS JOIN params p
+    WHERE f.mes_referencia >= p.mes_ini AND f.mes_referencia <= p.mes_fim
+    GROUP BY f.mes_referencia
+),
+baixas_obt AS (
+    SELECT o.mes_referencia, COUNT(DISTINCT o.cnpj_raiz) AS qtd
+    FROM tcc_receita.gold.obt_dashboard_eventos o
+    CROSS JOIN params p
+    WHERE o.mes_referencia >= p.mes_ini AND o.mes_referencia <= p.mes_fim
+      AND o.tipo_evento = 'MUDOU ESTADO CADASTRAL'
+      AND o.eh_matriz = TRUE
+      AND o.situacao_cadastral_posterior = 'BAIXADA'
+      AND o.situacao_cadastral_anterior <> 'BAIXADA'
+    GROUP BY o.mes_referencia
+),
+comparacao AS (
+    SELECT
+        COALESCE(f.mes_referencia, o.mes_referencia) AS mes_referencia,
+        COALESCE(f.qtd, 0) AS qtd_fato,
+        COALESCE(o.qtd, 0) AS qtd_obt
+    FROM baixas_fato f
+    FULL OUTER JOIN baixas_obt o ON f.mes_referencia = o.mes_referencia
+),
+resumo AS (
+    SELECT
+        COUNT_IF(ABS(qtd_fato - qtd_obt) > 0.005 * GREATEST(qtd_fato, qtd_obt)) AS meses_divergentes,
+        MIN(CASE WHEN ABS(qtd_fato - qtd_obt) > 0.005 * GREATEST(qtd_fato, qtd_obt)
+                 THEN CONCAT(mes_referencia, ' fato=', CAST(qtd_fato AS STRING), ' obt=', CAST(qtd_obt AS STRING)) END)
+            AS exemplo
+    FROM comparacao
+)
+SELECT
+    ASSERT_TRUE(r.meses_divergentes = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes x obt_dashboard_eventos]: total de baixas de matriz difere mais de 0,5% em ',
+               CAST(r.meses_divergentes AS STRING), ' mes(es); ex.: ', COALESCE(r.exemplo, '?')))
+FROM resumo r;
 
 -- 3. fato_indicadores_setoriais_mes: o painel soma o mesmo estoque que o fato e as taxas são proporções válidas.
 WITH params AS (

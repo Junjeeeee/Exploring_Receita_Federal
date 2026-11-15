@@ -6,6 +6,8 @@
 -- Relógio: mes_referencia = snapshot da Receita (mês de detecção). "Mês anterior" = mês calendário M−1;
 -- se a dimensão não tem versão cobrindo M−1, a empresa não existia em M−1.
 -- Baseline = primeiro mês da dimensão (carga inicial): estoque de abertura, nenhuma flag de fluxo.
+-- Primeira aparição pós-baseline já fora de ATIVA (abriu e fechou entre dois snapshots) = abertura E o evento
+-- da situação em que apareceu (baixa, inaptidão ou suspensão) no mesmo mês (D-17).
 -- Linhas guardadas: ativa no início ou no fim do mês, abertura, ou mudança de situação.
 -- Identidade (vale linha a linha, portanto em qualquer soma, fora do baseline):
 --     ativa_fim_mes = ativa_inicio_mes + entrou_estoque_mes − saiu_estoque_mes
@@ -36,21 +38,30 @@ CREATE TABLE IF NOT EXISTS tcc_receita.gold.fato_empresa_mes (
     ativa_inicio_mes BOOLEAN COMMENT 'Matriz ATIVA no mês calendário anterior (população em risco). FALSE no baseline e se a empresa não existia em M−1.',
     ativa_fim_mes BOOLEAN COMMENT 'Matriz ATIVA no mês de referência.',
     teve_abertura_mes BOOLEAN COMMENT 'Primeira aparição da empresa na dimensão, em mês posterior ao baseline.',
-    teve_baixa_mes BOOLEAN COMMENT 'Existia em M−1 sem estar BAIXADA e está BAIXADA em M.',
+    teve_baixa_mes BOOLEAN COMMENT 'Está BAIXADA em M e: existia em M−1 sem estar BAIXADA, ou é a primeira aparição pós-baseline (abertura e baixa no mesmo mês, D-17).',
     teve_falencia_mes BOOLEAN COMMENT 'teve_baixa_mes com motivo 05, 06 ou 10 (falência / liquidação judicial).',
-    teve_inaptidao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar INAPTA e está INAPTA em M.',
+    teve_inaptidao_mes BOOLEAN COMMENT 'Está INAPTA em M e: existia em M−1 sem estar INAPTA, ou é a primeira aparição pós-baseline (D-17).',
     data_carga_etl TIMESTAMP COMMENT 'Momento do processamento na camada Gold.',
     situacao_inicio_mes STRING COMMENT 'Situação cadastral da matriz no mês calendário anterior; NULL se a empresa não existia em M−1.',
     teve_reativacao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar ATIVA e está ATIVA em M.',
     entrou_estoque_mes BOOLEAN COMMENT 'NOT ativa_inicio_mes AND ativa_fim_mes (abertura ou reativação). FALSE no baseline.',
     saiu_estoque_mes BOOLEAN COMMENT 'ativa_inicio_mes AND NOT ativa_fim_mes (baixa, inaptidão, suspensão, nulidade...).',
-    teve_suspensao_mes BOOLEAN COMMENT 'Existia em M−1 sem estar SUSPENSA e está SUSPENSA em M.',
+    teve_suspensao_mes BOOLEAN COMMENT 'Está SUSPENSA em M e: existia em M−1 sem estar SUSPENSA, ou é a primeira aparição pós-baseline (D-17).',
     idade_na_baixa_meses INT COMMENT 'Só quando teve_baixa_mes: meses completos entre data_inicio_atividade e a data real da baixa (data_situacao_cadastral). NULL se falta data ou se a baixa é anterior ao início.',
     faixa_idade_baixa STRING COMMENT 'Só quando teve_baixa_mes: 00-01 ano, 01-02 anos, 02-05 anos, 05-10 anos, 10+ anos ou sem data (idade NULL). NULL quando não houve baixa.'
 )
 USING DELTA
 PARTITIONED BY (mes_referencia)
 COMMENT 'Camada Gold: empresa × mês (matriz canônica) com estoque de ativas e fluxos derivados só da linha do tempo da dim_empresa. Guarda apenas linhas ativas no início/fim do mês, aberturas e mudanças de situação.';
+
+-- D-17 mudou a regra de três flags sem mudar o schema: CREATE TABLE IF NOT EXISTS não atualiza comentário de
+-- tabela que já existe, então os comentários dessas colunas são reescritos aqui (idempotente).
+ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_baixa_mes
+    COMMENT 'Está BAIXADA em M e: existia em M−1 sem estar BAIXADA, ou é a primeira aparição pós-baseline (abertura e baixa no mesmo mês, D-17).';
+ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_inaptidao_mes
+    COMMENT 'Está INAPTA em M e: existia em M−1 sem estar INAPTA, ou é a primeira aparição pós-baseline (D-17).';
+ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_suspensao_mes
+    COMMENT 'Está SUSPENSA em M e: existia em M−1 sem estar SUSPENSA, ou é a primeira aparição pós-baseline (D-17).';
 
 -- Parâmetros obrigatórios: o REPLACE WHERE abaixo precisa da janela explícita. Parâmetro vazio NÃO vira
 -- "mês anterior" (isso faria o Job rodar verde sobre outro mês): falha aqui, antes de gravar qualquer coisa.
@@ -205,21 +216,29 @@ estoque_mes AS (
         s.*,
         (s.situacao_inicio_mes IS NOT NULL) AS existia_mes_anterior,
         COALESCE(s.situacao_inicio_mes = 'ATIVA', FALSE) AS ativa_inicio_mes,
-        (s.situacao_cadastral = 'ATIVA') AS ativa_fim_mes
+        (s.situacao_cadastral = 'ATIVA') AS ativa_fim_mes,
+        -- Primeira aparição da empresa na dimensão, depois do baseline (= abertura).
+        (NOT s.eh_baseline AND s.eh_primeira_versao AND s.eh_mes_inicio_versao) AS eh_primeira_aparicao
     FROM estado_mes s
 ),
 fluxos_mes AS (
     -- Fluxos (todos FALSE no baseline: lá não existe M−1, e entrada/abertura são forçadas a FALSE).
-    -- Uma transição de situação só existe se a empresa existia em M−1.
+    -- Transição de situação: a empresa existia em M−1 numa situação diferente, OU é a primeira aparição
+    -- (pós-baseline) já nessa situação (D-17): quem abre e fecha entre dois snapshots aparece já BAIXADA e
+    -- conta como abertura E baixa no mesmo mês. Ela nunca esteve ATIVA num snapshot, então não entra nem sai
+    -- do estoque (a identidade de ativas não muda) e não é "baixa de ativa" (fica fora das taxas por mil).
     SELECT
         e.*,
-        (NOT e.eh_baseline AND e.eh_primeira_versao AND e.eh_mes_inicio_versao) AS teve_abertura_mes,
+        e.eh_primeira_aparicao AS teve_abertura_mes,
         (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'ATIVA'    AND e.situacao_cadastral = 'ATIVA')    AS teve_reativacao_mes,
         (NOT e.eh_baseline AND NOT e.ativa_inicio_mes AND e.ativa_fim_mes) AS entrou_estoque_mes,
         (e.ativa_inicio_mes AND NOT e.ativa_fim_mes) AS saiu_estoque_mes,
-        (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'BAIXADA'  AND e.situacao_cadastral = 'BAIXADA')  AS teve_baixa_mes,
-        (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'INAPTA'   AND e.situacao_cadastral = 'INAPTA')   AS teve_inaptidao_mes,
-        (e.existia_mes_anterior AND e.situacao_inicio_mes <> 'SUSPENSA' AND e.situacao_cadastral = 'SUSPENSA') AS teve_suspensao_mes
+        (e.situacao_cadastral = 'BAIXADA'
+         AND ((e.existia_mes_anterior AND e.situacao_inicio_mes <> 'BAIXADA')  OR e.eh_primeira_aparicao)) AS teve_baixa_mes,
+        (e.situacao_cadastral = 'INAPTA'
+         AND ((e.existia_mes_anterior AND e.situacao_inicio_mes <> 'INAPTA')   OR e.eh_primeira_aparicao)) AS teve_inaptidao_mes,
+        (e.situacao_cadastral = 'SUSPENSA'
+         AND ((e.existia_mes_anterior AND e.situacao_inicio_mes <> 'SUSPENSA') OR e.eh_primeira_aparicao)) AS teve_suspensao_mes
     FROM estoque_mes e
 ),
 idade_baixa AS (
@@ -248,7 +267,8 @@ SELECT
     f.divisao_cnae,
     f.grande_area_cnae,
     -- B23: ao sair do estoque (ex.: MEI baixado vira "ME" na Receita) vale o atributo de M−1. Saída só
-    -- acontece no mês de início de uma versão, então M−1 = a versão anterior (LAG).
+    -- acontece no mês de início de uma versão, então M−1 = a versão anterior (LAG). Na primeira aparição já
+    -- BAIXADA (D-17) não há M−1: vale o porte da própria versão (o MEI que já nasce baixado tende a vir como ME).
     COALESCE(NULLIF(
         CASE WHEN f.saiu_estoque_mes THEN f.porte_versao_anterior ELSE f.enquadramento_porte_analitico END,
         'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS porte_empresa,

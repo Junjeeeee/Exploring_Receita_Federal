@@ -59,7 +59,9 @@ SELECT /*+ BROADCAST(m) */
     a.estoque_inicial_ativas,
     a.estoque_final_ativas,
     a.qtd_aberturas,
-    -- Todas as baixas do mês (inclui quem já estava INAPTA/SUSPENSA). Para taxa use qtd_baixas_de_ativas.
+    -- Todas as baixas do mês: inclui quem já estava INAPTA/SUSPENSA e quem já aparece BAIXADA na primeira
+    -- aparição (abriu e fechou entre dois snapshots, D-17; conta também em qtd_aberturas). Taxa de fechamento usa
+    -- qtd_baixas_de_ativas: essas empresas nunca estiveram na população em risco (ativas no início do mês).
     a.qtd_baixas,
     a.qtd_falencias,
     a.qtd_inaptidoes,
