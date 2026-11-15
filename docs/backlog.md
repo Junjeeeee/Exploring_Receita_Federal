@@ -78,6 +78,7 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | — | Seed BCB (Selic/IPCA) fixo até 2025-12 → ingerir da API | ⬜ |
 | — | Apagar sem uso: `vw_dashboard_eventos_cnae.sql`, `ds_visao_macro.sql`, `ds_micro_*.sql`, `bronze/configs/cnaes.py`, `config/*.yaml`, `.claude/context_from_other_llm.md`, `checkpoint_estado.json`, `last_processed_month.txt`, notebooks quebrados | ⬜ |
 | — | `README.md` da raiz vazio | ⬜ |
+| — | Custo: NAT Gateway ligado 24 h custa ~US$ 36/mês; decisão: apagar entre execuções e recriar antes do Job (`scripts/aws/nat_ligar.sh` / `nat_desligar.sh`) | ✅ 2026-11-14 (scripts prontos, não executados) |
 | — | Landing: mês publicado pela metade é aceito e congelado; guardar data de extração dos ZIPs | ⬜ |
 | — | Dicionário de dados (pedido da orientadora): gerar a partir dos `COMMENT` das DDLs | ⬜ |
 

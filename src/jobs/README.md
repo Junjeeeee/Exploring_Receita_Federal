@@ -3,6 +3,9 @@
 Pipeline completo (bronze → silver_intermediate → silver_final → gold) num **único job cluster**
 (sem SQL warehouse, sem serverless). Status: **preparado, não executado**.
 
+> **Antes de rodar o Job:** `scripts/aws/nat_ligar.sh`; **ao terminar:** `scripts/aws/nat_desligar.sh`.
+> Sem o NAT Gateway o cluster não sobe (ver `scripts/aws/README.md`).
+
 ## Como criar (manual, pela UI)
 
 1. *Workflows → Create job → ⋮ → Edit as YAML* e colar `tcc_receita_pipeline.job.yml`.
