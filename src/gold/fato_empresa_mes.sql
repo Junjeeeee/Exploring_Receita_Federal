@@ -1,6 +1,7 @@
 -- Gold | fato_empresa_mes
 -- Grão: uma linha por empresa (cnpj_raiz, representada pela matriz canônica) × mês de referência.
--- Fonte única: a linha do tempo da empresa em silver_final.dim_empresa. NÃO lê a OBT de eventos.
+-- Fonte: a linha do tempo da empresa em silver_final.dim_empresa. NÃO lê a OBT de eventos. Exceção estreita:
+-- silver_intermediate.dados_simples, só para o porte da baixa na primeira aparição já BAIXADA (D-17b).
 -- Spec: docs/specs/features/2026-11-14-semantica-eventos-e-fluxos.md (seção 2.4).
 --
 -- Relógio: mes_referencia = snapshot da Receita (mês de detecção). "Mês anterior" = mês calendário M−1;
@@ -26,8 +27,8 @@ CREATE TABLE IF NOT EXISTS tcc_receita.gold.fato_empresa_mes (
     classe_cnae STRING COMMENT 'Classe CNAE do CNAE principal no mês.',
     divisao_cnae STRING COMMENT 'Divisão CNAE do CNAE principal no mês.',
     grande_area_cnae STRING COMMENT 'Grande setor econômico (agrupamento analítico) no mês.',
-    porte_empresa STRING COMMENT 'Porte analítico (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO...). Do mês anterior quando saiu_estoque_mes (B23); senão do mês.',
-    opcao_pelo_mei BOOLEAN COMMENT 'Optante pelo MEI; do mês anterior quando saiu_estoque_mes (B23). NULL = sem informação (não é FALSE).',
+    porte_empresa STRING COMMENT 'Porte analítico (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO...). Do mês anterior quando saiu_estoque_mes (B23); MEI na baixa de primeira aparição quando as datas do Simples mostram MEI na data da baixa (D-17b); senão do mês.',
+    opcao_pelo_mei BOOLEAN COMMENT 'Optante pelo MEI; do mês anterior quando saiu_estoque_mes (B23); TRUE na baixa de primeira aparição com MEI na data da baixa (D-17b). NULL = sem informação (não é FALSE).',
     opcao_pelo_simples BOOLEAN COMMENT 'Optante pelo Simples; do mês anterior quando saiu_estoque_mes (B23). NULL = sem informação (não é FALSE).',
     uf STRING COMMENT 'UF da matriz no mês; NI = não identificada.',
     municipio STRING COMMENT 'Município da matriz no mês; NAO IDENTIFICADO quando ausente.',
@@ -54,7 +55,7 @@ USING DELTA
 PARTITIONED BY (mes_referencia)
 COMMENT 'Camada Gold: empresa × mês (matriz canônica) com estoque de ativas e fluxos derivados só da linha do tempo da dim_empresa. Guarda apenas linhas ativas no início/fim do mês, aberturas e mudanças de situação.';
 
--- D-17 mudou a regra de três flags sem mudar o schema: CREATE TABLE IF NOT EXISTS não atualiza comentário de
+-- D-17/D-17b mudaram regras de colunas sem mudar o schema: CREATE TABLE IF NOT EXISTS não atualiza comentário de
 -- tabela que já existe, então os comentários dessas colunas são reescritos aqui (idempotente).
 ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_baixa_mes
     COMMENT 'Está BAIXADA em M e: existia em M−1 sem estar BAIXADA, ou é a primeira aparição pós-baseline (abertura e baixa no mesmo mês, D-17).';
@@ -62,6 +63,10 @@ ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_inaptidao_mes
     COMMENT 'Está INAPTA em M e: existia em M−1 sem estar INAPTA, ou é a primeira aparição pós-baseline (D-17).';
 ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_suspensao_mes
     COMMENT 'Está SUSPENSA em M e: existia em M−1 sem estar SUSPENSA, ou é a primeira aparição pós-baseline (D-17).';
+ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN porte_empresa
+    COMMENT 'Porte analítico (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO...). Do mês anterior quando saiu_estoque_mes (B23); MEI na baixa de primeira aparição quando as datas do Simples mostram MEI na data da baixa (D-17b); senão do mês.';
+ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN opcao_pelo_mei
+    COMMENT 'Optante pelo MEI; do mês anterior quando saiu_estoque_mes (B23); TRUE na baixa de primeira aparição com MEI na data da baixa (D-17b). NULL = sem informação (não é FALSE).';
 
 -- Parâmetros obrigatórios: o REPLACE WHERE abaixo precisa da janela explícita. Parâmetro vazio NÃO vira
 -- "mês anterior" (isso faria o Job rodar verde sobre outro mês): falha aqui, antes de gravar qualquer coisa.
@@ -105,6 +110,35 @@ primeira_aparicao AS (
     GROUP BY cnpj_raiz
     HAVING MIN(inicio_vigencia) >= (SELECT mes_ini FROM params)
        AND MIN(inicio_vigencia) <= (SELECT mes_fim FROM params)
+),
+mei_na_baixa AS (
+    -- Porte da baixa na primeira aparição já BAIXADA (D-17b). Não há versão anterior (B23 não se aplica) e a
+    -- Receita tira a marca de MEI na baixa: o MEI aparece como ME. Decide-se pelas DATAS do Simples, nunca
+    -- pela natureza jurídica: era MEI na data da baixa se tem opção pelo MEI válida <= data da baixa e a
+    -- exclusão do MEI é nula ou não anterior à data da baixa (tolerância 0 dia: na amostra, a exclusão é
+    -- igual à data da baixa em 100% dos casos). Data inválida/ausente = sem informação (não vira MEI).
+    -- Só as empresas de primeira aparição já BAIXADA entram no join com dados_simples (tabela grande); só
+    -- versões do Simples conhecidas até o mês da aparição (sem olhar o futuro).
+    SELECT /*+ BROADCAST(nb) */ nb.cnpj_raiz
+    FROM (
+        SELECT e.cnpj_raiz, e.inicio_vigencia, e.data_situacao_cadastral AS data_baixa
+        FROM tcc_receita.silver_final.dim_empresa e
+        JOIN primeira_aparicao pa
+          ON pa.cnpj_raiz = e.cnpj_raiz
+         AND pa.mes_primeira_aparicao = e.inicio_vigencia
+        CROSS JOIN limites_dim l
+        WHERE e.sk_empresa != -1
+          AND e.situacao_cadastral_matriz = 'BAIXADA'
+          AND e.data_situacao_cadastral IS NOT NULL
+          AND e.inicio_vigencia > l.mes_baseline
+    ) nb
+    JOIN tcc_receita.silver_intermediate.dados_simples s
+      ON s.cnpj_basico = nb.cnpj_raiz
+     AND s.valid_since <= nb.inicio_vigencia
+    WHERE TRY_TO_DATE(s.data_opcao_mei, 'yyyyMMdd') <= nb.data_baixa
+      AND (TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') IS NULL
+           OR TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') >= nb.data_baixa)
+    GROUP BY nb.cnpj_raiz
 ),
 versoes_janela AS (
     -- Só versões que intersectam [mês anterior à janela, fim da janela]. A versão que cobre M−1 do
@@ -268,11 +302,20 @@ SELECT
     f.grande_area_cnae,
     -- B23: ao sair do estoque (ex.: MEI baixado vira "ME" na Receita) vale o atributo de M−1. Saída só
     -- acontece no mês de início de uma versão, então M−1 = a versão anterior (LAG). Na primeira aparição já
-    -- BAIXADA (D-17) não há M−1: vale o porte da própria versão (o MEI que já nasce baixado tende a vir como ME).
+    -- BAIXADA (D-17) não há M−1: vale 'MEI' se as datas do Simples mostram que era MEI na data da baixa
+    -- (mei_na_baixa, D-17b); senão, o porte da própria versão.
     COALESCE(NULLIF(
-        CASE WHEN f.saiu_estoque_mes THEN f.porte_versao_anterior ELSE f.enquadramento_porte_analitico END,
+        CASE
+            WHEN f.saiu_estoque_mes THEN f.porte_versao_anterior
+            WHEN mb.cnpj_raiz IS NOT NULL THEN 'MEI'
+            ELSE f.enquadramento_porte_analitico
+        END,
         'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS porte_empresa,
-    CASE WHEN f.saiu_estoque_mes THEN f.mei_versao_anterior ELSE f.opcao_pelo_mei END AS opcao_pelo_mei,
+    CASE
+        WHEN f.saiu_estoque_mes THEN f.mei_versao_anterior
+        WHEN mb.cnpj_raiz IS NOT NULL THEN TRUE
+        ELSE f.opcao_pelo_mei
+    END AS opcao_pelo_mei,
     CASE WHEN f.saiu_estoque_mes THEN f.simples_versao_anterior ELSE f.opcao_pelo_simples END AS opcao_pelo_simples,
     COALESCE(NULLIF(f.uf, 'NA'), 'NI') AS uf,
     COALESCE(NULLIF(f.municipio, 'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS municipio,
@@ -310,6 +353,10 @@ SELECT
         ELSE '10+ anos'
     END AS faixa_idade_baixa
 FROM idade_baixa f
+LEFT JOIN mei_na_baixa mb
+    ON mb.cnpj_raiz = f.cnpj_raiz
+   AND f.teve_abertura_mes
+   AND f.teve_baixa_mes
 -- Filtro DEPOIS das flags: empresas fora do estoque e sem mudança (ex.: baixadas há anos) não geram linha.
 WHERE f.ativa_inicio_mes
    OR f.ativa_fim_mes

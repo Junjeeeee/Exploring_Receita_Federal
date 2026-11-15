@@ -242,6 +242,51 @@ SELECT
                CAST(r.meses_divergentes AS STRING), ' mes(es); ex.: ', COALESCE(r.exemplo, '?')))
 FROM resumo r;
 
+-- 2c. Porte da baixa na primeira aparição já BAIXADA (D-17b), recalculado aqui de forma independente:
+--     (a) quem tem, no Simples, opção pelo MEI <= data da baixa e exclusão nula ou >= data da baixa tem de estar
+--         com porte MEI e opcao_pelo_mei TRUE;
+--     (b) plausibilidade [padrão]: com 100+ dessas baixas na janela, pelo menos 80% são MEI (base real: ~98% das
+--         marcadas como ME tinham as datas de MEI; amostra: 256 de 257).
+WITH params AS (
+    SELECT '{{mes_referencia_inicial}}' AS mes_ini, '{{mes_referencia_final}}' AS mes_fim
+),
+nascidas_baixadas AS (
+    SELECT f.mes_referencia, f.cnpj_raiz, f.porte_empresa, f.opcao_pelo_mei, d.data_situacao_cadastral AS data_baixa
+    FROM tcc_receita.gold.fato_empresa_mes f
+    CROSS JOIN params p
+    JOIN tcc_receita.silver_final.dim_empresa d ON d.sk_empresa = f.sk_empresa
+    WHERE f.mes_referencia >= p.mes_ini AND f.mes_referencia <= p.mes_fim
+      AND f.teve_abertura_mes AND f.teve_baixa_mes
+),
+pela_regra AS (
+    SELECT /*+ BROADCAST(n) */ n.mes_referencia, n.cnpj_raiz
+    FROM nascidas_baixadas n
+    JOIN tcc_receita.silver_intermediate.dados_simples s
+      ON s.cnpj_basico = n.cnpj_raiz
+     AND s.valid_since <= n.mes_referencia
+    WHERE TRY_TO_DATE(s.data_opcao_mei, 'yyyyMMdd') <= n.data_baixa
+      AND (TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') IS NULL
+           OR TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') >= n.data_baixa)
+    GROUP BY n.mes_referencia, n.cnpj_raiz
+),
+resumo AS (
+    SELECT
+        COUNT(*) AS qtd,
+        COUNT_IF(n.porte_empresa = 'MEI') AS qtd_mei,
+        COUNT_IF(r.cnpj_raiz IS NOT NULL
+                 AND (n.porte_empresa <> 'MEI' OR NOT COALESCE(n.opcao_pelo_mei, FALSE))) AS violacoes
+    FROM nascidas_baixadas n
+    LEFT JOIN pela_regra r ON r.mes_referencia = n.mes_referencia AND r.cnpj_raiz = n.cnpj_raiz
+)
+SELECT
+    ASSERT_TRUE(r.violacoes = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ', CAST(r.violacoes AS STRING),
+               ' baixas de primeira aparicao com datas de MEI no Simples e porte diferente de MEI (D-17b).')),
+    ASSERT_TRUE(r.qtd < 100 OR r.qtd_mei >= 0.8 * r.qtd,
+        CONCAT('ERRO DQ [fato_empresa_mes]: so ', CAST(r.qtd_mei AS STRING), ' de ', CAST(r.qtd AS STRING),
+               ' baixas de primeira aparicao sao MEI; esperado >= 80% (D-17b).'))
+FROM resumo r;
+
 -- 3. fato_indicadores_setoriais_mes: o painel soma o mesmo estoque que o fato e as taxas são proporções válidas.
 WITH params AS (
     SELECT '{{mes_referencia_inicial}}' AS mes_ini, '{{mes_referencia_final}}' AS mes_fim

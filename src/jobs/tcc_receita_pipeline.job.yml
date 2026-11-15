@@ -640,6 +640,7 @@ resources:
         - task_key: sf_dq_dim_cnae
         - task_key: sf_dq_dim_empresa
         - task_key: sf_dq_ponte_cnae
+        - task_key: si_dq_dados_simples
       - task_key: gold_ds_visao_macro
         job_cluster_key: cluster_pipeline
         spark_python_task:
@@ -849,3 +850,4 @@ resources:
         - task_key: gold_obt_dashboard_eventos
         - task_key: sf_dim_empresa
         - task_key: sf_fato_mudanca_estado
+        - task_key: si_dados_simples
