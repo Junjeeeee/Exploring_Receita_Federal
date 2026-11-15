@@ -10,25 +10,39 @@
 ## Alvo atual — dashboard funcionando na segunda, 2026-11-16
 
 Spec: [`specs/features/2026-11-14-semantica-eventos-e-fluxos.md`](specs/features/2026-11-14-semantica-eventos-e-fluxos.md).
-Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amostra/`. Em 2026-11-14 o pipeline inteiro
-(SCD2 → log → silver_final → gold → todos os DQ) passou na amostra e as 11 consultas do dashboard rodaram contra ela.
-Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA, amostra 1%)*.
+Validação: ambiente de amostra (1% da base) no SQL warehouse — `scripts/amostra/`.
+
+**Executado na base real em 2026-11-14/15** (2023-05 a 2023-08): log → silver_final → gold, 23 tasks e todos os DQ
+passaram; dashboard oficial *TCC Receita — Dinâmica empresarial* republicado com o v2 (6 páginas, 18 datasets).
+Run principal: 42 min 52 s (5 min de subida do cluster). Números de referência na seção de medições, no fim.
+
+O que a execução ensinou (cada item virou correção ou entrada abaixo):
+
+- A amostra roda no SQL warehouse e **não valida compatibilidade com o cluster do Job** (Spark 3.5): duas falhas na base
+  real por isso — `OPTIMIZE ... ZORDER BY` em tabela com clustering automático e `TRY_TO_DATE` (só existe no Spark 4 /
+  warehouse). Ambas corrigidas; falta uma checagem automática (P1 abaixo).
+- No Lakeview, expressão composta no campo do widget (`SUM(a)/SUM(b)`) é avaliada errado em silêncio; a conta vai para
+  o SQL do dataset e o `validar()` do gerador recusa o resto.
+- Inaptidão é praticamente zero em jun–ago/2023 (19 / 29 / 20 de ativas): a Receita declara em lotes (os de 2022). Não
+  é defeito; precisa de nota no dashboard e no TCC.
+- Custo: o maior gasto do workspace era um NAT Gateway ligado 24 h (~US$ 36/mês). Agora fica **desligado**; antes de
+  rodar o Job, `scripts/aws/nat_ligar.sh`; ao terminar, `scripts/aws/nat_desligar.sh` (ciclo testado em 2026-11-15:
+  cluster sobe com NAT e IP novos). Sem NAT o cluster falha com `BOOTSTRAP_TIMEOUT`; warehouse e dashboard não dependem dele.
 
 | ID | O que | Onde | Estado |
 |---|---|---|---|
-| B21 / C-04 | Aberturas subcontadas: evento datado pela data real, empresa só entra no snapshot seguinte. Todo evento passa a ter `mes_referencia` = mês de detecção e `data_evento` = data real | spec §2.1, T1 | 🧪 |
-| C-02 | `dim_empresa` trunca a vigência de 92.613 CNPJs | spec §2.4, T2 | 🧪 |
-| C-03 | `teve_baixa_mes` repetia e contava filial; flags passam a vir da transição da matriz | spec §2.4, T4 | 🧪 |
-| B22 / C-07 | "Falência" = toda baixa; quatro categorias inalcançáveis. Classificação por código de motivo | spec §2.3, T3 | 🧪 |
-| B23 | Porte da baixa usava o estado posterior (MEI virava ME) | spec §2.4, T3/T4 | 🧪 |
-| B24 | UF `'RJ,SP'` etc. (3 CEPs ruins → 5.887 linhas) | T2 | 🧪 |
-| C-16 | Eventos sem versão anterior perdidos (`ENTROU NO MEI`: 443 de ~745 mil) | T1 | 🧪 |
-| C-12 | Dashboard listava razão social de empresário individual | T4, T6 | 🧪 |
-| C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | 🧪 |
-| C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | 🧪 |
-| — | Dashboard v2: 6 páginas com pergunta por página, big numbers do último mês com Δ, idade na baixa (`fato_empresa_mes`). Validado na amostra; prévia atualizada; **renderização não conferida** (risco: contadores com `try_divide`) | [`specs/features/2026-11-14-dashboard-v2-narrativa.md`](specs/features/2026-11-14-dashboard-v2-narrativa.md) | 🧪 |
-| D-17 | Primeira aparição já BAIXADA (abriu e fechou entre snapshots) contava só como abertura; passa a ser abertura **e** baixa (idem inaptidão/suspensão). Na base real: rodar `gold_fato_empresa_mes` → `gold_fato_indicadores_setoriais_mes` → `gold_dq_gold` e reimportar o JSON. Porte dessas baixas corrigido pelas datas do Simples (D-17b: 250 de 257 viram MEI na amostra). Colar o YAML novo do Job (fato e DQ gold passam a depender de `dados_simples`; a ordem já era garantida por transitividade) | spec §2.4, `decisions.md` D-17 | 🧪 |
-| — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** — passo a passo na spec §5 |
+| B21 / C-04 | Aberturas subcontadas: evento datado pela data real, empresa só entra no snapshot seguinte. Todo evento passa a ter `mes_referencia` = mês de detecção e `data_evento` = data real | spec §2.1, T1 | ✅ 2026-11-15 |
+| C-02 | `dim_empresa` trunca a vigência de 92.613 CNPJs | spec §2.4, T2 | ✅ 2026-11-15 |
+| C-03 | `teve_baixa_mes` repetia e contava filial; flags passam a vir da transição da matriz | spec §2.4, T4 | ✅ 2026-11-15 |
+| B22 / C-07 | "Falência" = toda baixa; quatro categorias inalcançáveis. Classificação por código de motivo | spec §2.3, T3 | ✅ 2026-11-15 |
+| B23 | Porte da baixa usava o estado posterior (MEI virava ME) | spec §2.4, T3/T4 | ✅ 2026-11-15 |
+| B24 | UF `'RJ,SP'` etc. (3 CEPs ruins → 5.887 linhas) | T2 | ✅ 2026-11-15 |
+| C-16 | Eventos sem versão anterior perdidos (`ENTROU NO MEI`: 443 de ~745 mil) | T1 | ✅ 2026-11-15 |
+| C-12 | Dashboard listava razão social de empresário individual | T4, T6 | ✅ 2026-11-15 |
+| C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | ✅ 2026-11-15 |
+| C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | ✅ 2026-11-15 |
+| — | Dashboard v2: 6 páginas com pergunta por página, big numbers do último mês com Δ, idade na baixa (`fato_empresa_mes`). Aprovado pelo autor na prévia; publicado no dashboard oficial | [`specs/features/2026-11-14-dashboard-v2-narrativa.md`](specs/features/2026-11-14-dashboard-v2-narrativa.md) | ✅ 2026-11-15 |
+| D-17 | Primeira aparição já BAIXADA (abriu e fechou entre snapshots) contava só como abertura; passa a ser abertura **e** baixa (idem inaptidão/suspensão). Porte dessas baixas corrigido pelas datas do Simples (D-17b: 250 de 257 viram MEI na amostra). | spec §2.4, `decisions.md` D-17 | ✅ 2026-11-15 |
 
 ## Decisões pendentes do autor
 
@@ -44,6 +58,12 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 
 | ID | O que | Onde | Estado |
 |---|---|---|---|
+| — | Checagem automática de compatibilidade dos SQL com o cluster do Job (Spark 3.5): funções só do warehouse (`TRY_TO_DATE`), `ZORDER` etc. A amostra não pega isso (2 falhas na base real em 2026-11-14) | `scripts/`, CI | ⬜ |
+| — | `si_log_eventos_negocio` ficou 3,6× mais lenta (241 → 873 s); `sf_fato_mudanca_estado` 1,7×. Otimizar antes da janela completa | `log_eventos_negocio.sql` | ⬜ |
+| — | Datasets grandes no dashboard (`mercado` 6,7 mi linhas, `mercado_bairros` 2,8 mi, `fluxos_empresa` 1,5 mi): conferir lentidão/corte no Lakeview e pré-agregar | `gerar_dashboard.py` | ⬜ |
+| — | Nota de inaptidão ≈ 0 no período (lotes da Receita) no dashboard e em `docs/tcc.md` | página "Sobre os dados" | ⬜ |
+| — | OBT marca como ME as nascidas já baixadas que o fato trata como MEI (D-17b); alinhar quando a OBT for reprocessada | `obt_dashboard_eventos.sql` | ⬜ |
+| — | Ao apagar o workspace: religar o NAT antes ou remover a sobra de rede à mão | `scripts/aws/README.md` | ⬜ lembrete |
 | D-a | **LGPD:** máscara de CPF da landing ampliada para toda natureza 2135 (antes só porte 01; 2.816 razões de porte 03/05 em claro). **Código pronto, falta reextrair `empresas` na landing** e reprocessar a cadeia; até lá os dados já extraídos seguem com as 2.816 razões em claro e a gold continua escondendo via `exibir_razao_social = FALSE` | [`specs/features/2026-11-14-mascara-cpf-empresario-individual.md`](specs/features/2026-11-14-mascara-cpf-empresario-individual.md), D-16 | 🔧 |
 | D-a′ | ~370 razões com 11 dígitos seguidos em **outras** naturezas: não mascaradas (podem ser números legítimos de PJ). Medir após a reextração (por natureza + dígito verificador de CPF) e decidir | mesma spec | ⬜ medir |
 | C-05 | `socios.sql` não idempotente (versão inativa fantasma ao reexecutar). Tabela atual **não** está contaminada (medido: 0) | critica §4.2, T5 | 🧪 |
@@ -79,7 +99,7 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | — | Seed BCB (Selic/IPCA) fixo até 2025-12 → ingerir da API | ⬜ |
 | — | Apagar sem uso: `vw_dashboard_eventos_cnae.sql`, `ds_visao_macro.sql`, `ds_micro_*.sql`, `bronze/configs/cnaes.py`, `config/*.yaml`, `.claude/context_from_other_llm.md`, `checkpoint_estado.json`, `last_processed_month.txt`, notebooks quebrados | ⬜ |
 | — | `README.md` da raiz vazio | ⬜ |
-| — | Custo: NAT Gateway ligado 24 h custa ~US$ 36/mês; decisão: apagar entre execuções e recriar antes do Job (`scripts/aws/nat_ligar.sh` / `nat_desligar.sh`) | ✅ 2026-11-14 (scripts prontos, não executados) |
+| — | Custo: NAT Gateway ligado 24 h custa ~US$ 36/mês; decisão: apagar entre execuções e recriar antes do Job (`scripts/aws/nat_ligar.sh` / `nat_desligar.sh`) | ✅ 2026-11-15 (ciclo testado; NAT desligado) |
 | — | Landing: mês publicado pela metade é aceito e congelado; guardar data de extração dos ZIPs | ⬜ |
 | — | Dicionário de dados (pedido da orientadora): gerar a partir dos `COMMENT` das DDLs | ⬜ |
 
@@ -102,6 +122,12 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | ATIVA → BAIXADA por mês | 155 mil / 136 mil / 165 mil |
 | Reativações em 3 meses | ~111 mil |
 | Baixas com motivo de falência (05) em 3 meses | ~430 |
+| Baixas de matriz por mês, com primeiras aparições já baixadas (D-17) | 183.553 / 163.596 / 200.882 |
+| Aberturas por baixa (jun / jul / ago) | 1,65 / 1,92 / 1,98 |
+| % MEI nas aberturas · nas baixas (ago) | 75,3% · 67,5% |
+| Idade mediana na baixa · % com menos de 2 anos (ago) | 2,17 anos · 46,5% |
+| Falências de matriz (jun / jul / ago) | 133 / 120 / 150 |
+| Crescimento líquido de ativas (jun / jul / ago) | 179.538 / 198.035 / 258.638 |
 | Eventos de estado cadastral: matriz × filial | 639.841 × 22.108 |
 | Sócios com primeira versão inativa · estabelecimentos correntes fora do último snapshot | 0 · 0 |
 | Linhas do fato de eventos sem empresa / sem CNPJ | 0 / 0 |
