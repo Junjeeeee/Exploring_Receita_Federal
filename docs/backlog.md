@@ -27,6 +27,7 @@ Prévia publicada no workspace: *TCC Receita — Dinâmica empresarial (PRÉVIA,
 | C-13 | Mesma métrica por dois caminhos; gráfico de situação misturava eventos de sócio/CNAE | T6 | 🧪 |
 | C-08 | DQ que não consegue falhar; falta identidade de estoque e reconciliação | T2–T4 | 🧪 |
 | — | Dashboard v2: 6 páginas com pergunta por página, big numbers do último mês com Δ, idade na baixa (`fato_empresa_mes`). Validado na amostra; prévia atualizada; **renderização não conferida** (risco: contadores com `try_divide`) | [`specs/features/2026-11-14-dashboard-v2-narrativa.md`](specs/features/2026-11-14-dashboard-v2-narrativa.md) | 🧪 |
+| D-17 | Primeira aparição já BAIXADA (abriu e fechou entre snapshots) contava só como abertura; passa a ser abertura **e** baixa (idem inaptidão/suspensão). Na base real: rodar `gold_fato_empresa_mes` → `gold_fato_indicadores_setoriais_mes` → `gold_dq_gold` e reimportar o JSON. Pendente: 250 das 257 dessas empresas na amostra são natureza 2135 com porte ME e sem MEI — provável MEI que perdeu a marca na baixa (% MEI das baixas cai ~3 p.p.) | spec §2.4, `decisions.md` D-17 | 🧪 |
 | — | Reexecutar log → silver_final → gold na base real (4 meses) e republicar o dashboard | spec T8 | ⬜ **depende de autorização** — passo a passo na spec §5 |
 
 ## Decisões pendentes do autor

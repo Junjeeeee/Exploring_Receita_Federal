@@ -58,9 +58,9 @@ Removidos: `estoque` (substituído por `resumo_mes`) e `situacao` (ver 2.5).
 | `resumo_mes` | `fato_indicadores_setoriais_mes` | UF × porte × área | contadores do último mês e Δ vs. mês anterior (colunas `*_ultimo_mes`, `*_delta`) |
 | `ultimo_mes` | idem | 1 linha | tabela com o mês de referência dos contadores e o anterior |
 | `estoque_mes` | idem | mês × UF × porte × área | série do estoque de ativas (inclui o baseline) |
-| `fluxos_empresa` | `fato_empresa_mes` | 1 linha por empresa × mês com abertura ou baixa (sem baseline) | % MEI, % falência, idade mediana, % < 2 anos, composição por porte |
+| `fluxos_empresa` | `fato_empresa_mes` | 1 linha por empresa × mês × tipo (abertura, baixa) (sem baseline); empresa que abre já BAIXADA (D-17) gera duas linhas, colunas de baixa só na linha `Baixas` | % MEI, % falência, idade mediana, % < 2 anos, composição por porte |
 | `baixas_idade` | `fato_empresa_mes` | mês × UF × porte × área × faixa | baixas por faixa de idade |
-| `baixas_motivo` | `obt_dashboard_eventos` | mês × UF × porte × área × categoria | baixas de matriz por categoria de motivo (empresas distintas) |
+| `baixas_motivo` | `obt_dashboard_eventos` | mês × UF × porte × área × categoria | baixas de matriz por categoria de motivo (empresas distintas): posterior BAIXADA, anterior ≠ BAIXADA (inclui `INEXISTENTE`, a primeira aparição — D-17); total = baixas do fato (DQ 2b) |
 | `extremos_setor` / `extremos_uf` | `fato_indicadores_setoriais_mes` | 2 linhas | "mais cresce" e "mais encolhe" (taxa de saldo por 1.000 ativas, com piso de volume) |
 
 Piso de volume dos rankings **[padrão]**: média mensal de ativas no início do mês ≥ 100 (na base real todas

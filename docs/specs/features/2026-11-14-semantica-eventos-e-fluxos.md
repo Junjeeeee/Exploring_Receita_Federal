@@ -118,11 +118,20 @@ o posterior (B23). `opcao_*` ficam NULL quando desconhecidos (sem `COALESCE(...,
 | `teve_reativacao_mes` | existia, não estava ATIVA, terminou ATIVA |
 | `entrou_estoque_mes` | `NOT ativa_inicio AND ativa_fim` |
 | `saiu_estoque_mes` | `ativa_inicio AND NOT ativa_fim` |
-| `teve_baixa_mes` | existia, não estava BAIXADA, terminou BAIXADA |
+| `teve_baixa_mes` | terminou BAIXADA e: existia sem estar BAIXADA, **ou** é a primeira aparição pós-baseline (D-17) |
 | `teve_falencia_mes` | `teve_baixa_mes` e motivo ∈ {05, 06, 10} |
-| `teve_inaptidao_mes` | existia, não estava INAPTA, terminou INAPTA |
-| `teve_suspensao_mes` | idem para SUSPENSA |
-| `porte_empresa`, `opcao_pelo_mei`, `opcao_pelo_simples` | valor do mês anterior quando `saiu_estoque_mes` (B23); senão o do mês |
+| `teve_inaptidao_mes` | idem para INAPTA (inclui primeira aparição já INAPTA) |
+| `teve_suspensao_mes` | idem para SUSPENSA (inclui primeira aparição já SUSPENSA) |
+| `porte_empresa`, `opcao_pelo_mei`, `opcao_pelo_simples` | valor do mês anterior quando `saiu_estoque_mes` (B23); senão o do mês (na primeira aparição já BAIXADA não há anterior: vale o da própria versão) |
+
+**Primeira aparição já fora de ATIVA (D-17, 2026-11-14).** Empresa que abre e fecha entre dois snapshots
+aparece pela primeira vez (mês > baseline) já BAIXADA: conta como **abertura e baixa no mesmo mês**, com
+falência, idade na baixa e faixa calculadas como em qualquer baixa. Idem para INAPTA (inaptidão) e SUSPENSA
+(suspensão). Como nunca esteve ATIVA num snapshot, `ativa_inicio/fim`, `entrou/saiu_estoque` e a identidade
+de ativas **não mudam**, e ela não entra em `qtd_baixas_de_ativas` (nem na taxa de fechamento por mil). É o
+mesmo critério do log, que já registra `MUDOU ESTADO CADASTRAL` NULL → situação na primeira aparição (OBT:
+anterior `INEXISTENTE`); o dataset `baixas_motivo` passa a incluí-la, e o DQ 2b do `dq_gold.sql` confere que
+o total de baixas do fato fecha com o da OBT.
 
 Identidade obrigatória (exceto no baseline, onde não há fluxo por construção):
 `estoque_final(M) = estoque_inicial(M) + entradas(M) − saídas(M)` e
@@ -133,7 +142,8 @@ A tabela guarda só linhas em que a empresa está ativa no início ou no fim do 
 **`gold.fato_indicadores_setoriais_mes`** — colunas novas: `qtd_reativacoes`, `qtd_entradas_estoque`,
 `qtd_saidas_estoque`, `qtd_baixas_de_ativas`, `qtd_suspensoes`. `crescimento_liquido` =
 `qtd_entradas_estoque − qtd_saidas_estoque`. Taxas por mil usam numeradores restritos a quem estava ativo
-no início (`qtd_baixas_de_ativas`, …).
+no início (`qtd_baixas_de_ativas`, …). `qtd_baixas` inclui as empresas que já aparecem BAIXADA (D-17);
+`qtd_baixas_de_ativas` e `taxa_fechamento_por_mil`, não.
 
 **`gold.ds_coorte_sobrevivencia`** — morte = `data_situacao_cadastral` da primeira versão BAIXADA
 (só BAIXADA é terminal); censura = último mês com dados na `dim_empresa`, não `CURRENT_DATE`; sem `FIRST()`;
@@ -195,6 +205,13 @@ classificação por código de motivo substitui a por texto; "falência" passa a
 - As 11 consultas do dashboard rodaram contra a amostra. A prévia do dashboard foi publicada no workspace, mas
   **a renderização dos widgets não foi conferida visualmente**.
 - Achado de spec: "situação igual, só o motivo mudou" precisa ser a primeira condição das categorias.
+
+**2026-11-14 — D-17 na amostra** (abertura e baixa no mesmo mês): só `fato_empresa_mes`,
+`fato_indicadores_setoriais_mes` e o JSON do dashboard mudaram; schema igual. Baixas jun/jul/ago
+1.704/1.574/1.826 → 1.772/1.646/1.943 (+68/+72/+117); aberturas por baixa em agosto 2,22 → 2,09; falências,
+baixas de ativas, taxa de fechamento, ativas e crescimento líquido inalterados; total de baixas do fato =
+`baixas_idade` = `baixas_motivo` em todos os meses; DQ gold passa. 250 das 257 empresas que já aparecem
+BAIXADA são natureza 2135 com porte ME e sem MEI (ver backlog).
 
 **Para executar na base real (T8), nesta ordem:**
 
