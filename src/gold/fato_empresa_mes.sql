@@ -135,9 +135,9 @@ mei_na_baixa AS (
     JOIN tcc_receita.silver_intermediate.dados_simples s
       ON s.cnpj_basico = nb.cnpj_raiz
      AND s.valid_since <= nb.inicio_vigencia
-    WHERE TRY_TO_DATE(s.data_opcao_mei, 'yyyyMMdd') <= nb.data_baixa
-      AND (TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') IS NULL
-           OR TRY_TO_DATE(s.data_exclusao_mei, 'yyyyMMdd') >= nb.data_baixa)
+    WHERE CAST(TRY_TO_TIMESTAMP(s.data_opcao_mei, 'yyyyMMdd') AS DATE) <= nb.data_baixa
+      AND (CAST(TRY_TO_TIMESTAMP(s.data_exclusao_mei, 'yyyyMMdd') AS DATE) IS NULL
+           OR CAST(TRY_TO_TIMESTAMP(s.data_exclusao_mei, 'yyyyMMdd') AS DATE) >= nb.data_baixa)
     GROUP BY nb.cnpj_raiz
 ),
 versoes_janela AS (
