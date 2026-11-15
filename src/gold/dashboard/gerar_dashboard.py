@@ -91,12 +91,9 @@ WHERE posicao_maior = 1 OR posicao_menor = 1
 """
 
 
-# Regra única de "aberturas": vêm de fato_empresa_mes / painel (primeira aparição da matriz), nunca da OBT.
-DATASETS = {
-    # --- página 1: resumo -------------------------------------------------------------------------
-    # Uma linha por UF × porte × grande área com os valores do último mês e a diferença para o mês anterior.
-    # Δ = valor(M) − valor(M−1) é linear: a soma dos Δ dos grupos filtrados é o Δ do total filtrado.
-    "resumo_mes": ("Último mês e variação contra o mês anterior", f"""
+# Uma linha por UF × porte × grande área com os valores do último mês e a diferença para o mês anterior.
+# Δ = valor(M) − valor(M−1) é linear: a soma dos Δ dos grupos filtrados é o Δ do total filtrado.
+RESUMO_MES_SQL = f"""
 WITH meses AS (
     -- Último mês carregado e o anterior (globais: não dependem dos filtros).
     SELECT
@@ -137,13 +134,28 @@ SELECT
     saldo_atual                         AS saldo_ultimo_mes,
     saldo_atual - saldo_anterior        AS saldo_delta
 FROM por_grupo
-"""),
+"""
+
+# Regra única de "aberturas": vêm de fato_empresa_mes / painel (primeira aparição da matriz), nunca da OBT.
+DATASETS = {
+    # --- página 1: resumo -------------------------------------------------------------------------
+    "resumo_mes": ("Último mês e variação contra o mês anterior", RESUMO_MES_SQL),
     # Diz a qual mês os contadores se referem (caixa de texto não mostra valor calculado; tabela mostra).
     "ultimo_mes": ("Mês dos contadores", f"""
 SELECT
     MAX(mes_referencia) AS mes_dos_contadores,
     DATE_FORMAT(ADD_MONTHS(TO_DATE(CONCAT(MAX(mes_referencia), '-01')), -1), 'yyyy-MM') AS comparado_com
 FROM {PAINEL}
+"""),
+    # Razão "aberturas por baixa" calculada AQUI, no SQL. O Lakeview avalia errado, em silêncio, expressão composta
+    # no campo do widget (SUM(a) / SUM(b) mostrou só SUM(a); try_divide nem desenhou). Uma linha, Brasil: por
+    # isso não reage aos filtros da página.
+    "aberturas_por_baixa": ("Aberturas por baixa, Brasil (último mês e anterior)", f"""
+WITH resumo AS ({RESUMO_MES_SQL})
+SELECT
+    ROUND(SUM(aberturas_ultimo_mes)   / NULLIF(SUM(baixas_ultimo_mes), 0), 2)   AS aberturas_por_baixa_ultimo_mes,
+    ROUND(SUM(aberturas_mes_anterior) / NULLIF(SUM(baixas_mes_anterior), 0), 2) AS aberturas_por_baixa_mes_anterior
+FROM resumo
 """),
     # Estoque inclui o baseline: é o ponto de partida da série (só fluxo é que não existe nele).
     "estoque_mes": ("Empresas ativas no fim de cada mês", f"""
@@ -315,6 +327,7 @@ COLUNAS = {
                    "aberturas_ultimo_mes", "aberturas_delta", "baixas_ultimo_mes", "baixas_mes_anterior",
                    "aberturas_mes_anterior", "baixas_delta", "saldo_ultimo_mes", "saldo_delta"],
     "ultimo_mes": ["mes_dos_contadores", "comparado_com"],
+    "aberturas_por_baixa": ["aberturas_por_baixa_ultimo_mes", "aberturas_por_baixa_mes_anterior"],
     "estoque_mes": ["mes_referencia", "data_referencia", "uf", "porte_empresa", "grande_area_cnae",
                     "estoque_final_ativas"],
     "painel": ["mes_referencia", "data_referencia", "uf", "porte_empresa", "grande_area_cnae",
@@ -359,18 +372,6 @@ def mediana(coluna):
     return {"name": f"median({coluna})", "expression": f"PERCENTILE(`{coluna}`, 0.5)"}
 
 
-def razao(nome, numerador, denominador, forma="divisao"):
-    """Razão de somas no widget. ÚNICO campo com expressão composta (risco de formato: ver spec § 2.1).
-    A prévia mostrou que `try_divide(SUM, SUM)` com nome "razao(a,b)" NÃO desenha ("Select fields to visualize").
-    Forma oficial: `SUM(a) / SUM(b)` com nome simples (sem parênteses nem vírgula), o mais parecido possível com
-    os contadores que desenham. As outras formas existem só para a página de teste."""
-    expressoes = {
-        "divisao": f"SUM(`{numerador}`) / SUM(`{denominador}`)",
-        "try_divide": f"try_divide(SUM(`{numerador}`), SUM(`{denominador}`))",
-    }
-    return {"name": nome, "expression": expressoes[forma]}
-
-
 def coluna(nome):
     return {"name": nome, "expression": f"`{nome}`"}
 
@@ -403,18 +404,6 @@ def contador(nome, titulo, dataset, campo, descricao=None):
         "queries": [_query(dataset, [campo])],
         "spec": {"version": 2, "widgetType": "counter",
                  "encodings": {"value": {"fieldName": campo["name"], "displayName": titulo}},
-                 "frame": _frame(titulo, descricao)},
-    }
-
-
-def contador_desagregado(nome, titulo, dataset, campo, descricao=None):
-    """Contador que mostra o valor de uma coluna sem agregar (dataset de uma linha). Mesma forma do contador
-    "30 Day Growth %" do dashboard de exemplo exportado pela Databricks."""
-    return {
-        "name": nome,
-        "queries": [_query(dataset, [coluna(campo)], desagregado=True)],
-        "spec": {"version": 2, "widgetType": "counter",
-                 "encodings": {"value": {"fieldName": campo, "displayName": titulo}},
                  "frame": _frame(titulo, descricao)},
     }
 
@@ -528,8 +517,8 @@ PAGINA_RESUMO = [
     (contador("c1_baixas", "Baixas no último mês", "resumo_mes", soma("baixas_ultimo_mes")), pos(5, 5, 2, 3)),
     (contador("c1_saldo", "Crescimento líquido no último mês", "resumo_mes", soma("saldo_ultimo_mes"),
               descricao=DEF_CRESC), pos(7, 5, 2, 3)),
-    (contador("c1_ab_por_baixa", "Aberturas por baixa no último mês", "resumo_mes",
-              razao("aberturas_por_baixa", "aberturas_ultimo_mes", "baixas_ultimo_mes"),
+    (contador("c1_ab_por_baixa", "Aberturas por baixa no último mês (Brasil, não muda com os filtros)",
+              "aberturas_por_baixa", soma("aberturas_por_baixa_ultimo_mes"),
               descricao="Acima de 1: abrem mais empresas do que fecham."), pos(9, 5, 3, 3)),
 
     (contador("c1_ativas_d", DELTA, "resumo_mes", soma("ativas_delta"),
@@ -538,9 +527,8 @@ PAGINA_RESUMO = [
     (contador("c1_aberturas_d", DELTA, "resumo_mes", soma("aberturas_delta")), pos(3, 8, 2, 2)),
     (contador("c1_baixas_d", DELTA, "resumo_mes", soma("baixas_delta")), pos(5, 8, 2, 2)),
     (contador("c1_saldo_d", DELTA, "resumo_mes", soma("saldo_delta")), pos(7, 8, 2, 2)),
-    (contador("c1_ab_por_baixa_ant", "Aberturas por baixa no mês anterior", "resumo_mes",
-              razao("aberturas_por_baixa_anterior", "aberturas_mes_anterior", "baixas_mes_anterior")),
-     pos(9, 8, 3, 2)),
+    (contador("c1_ab_por_baixa_ant", "Aberturas por baixa no mês anterior (Brasil)", "aberturas_por_baixa",
+              soma("aberturas_por_baixa_mes_anterior")), pos(9, 8, 3, 2)),
 
     (linha("l1_estoque", "O número de empresas ativas cresce mês a mês?", "estoque_mes", mes(),
            [(soma("estoque_final_ativas"), "Empresas ativas")],
@@ -730,55 +718,30 @@ def _pagina(nome, titulo, widgets):
             "pageType": "PAGE_TYPE_CANVAS", "layoutVersion": "GRID_V1"}
 
 
-# --- página TEMPORÁRIA de teste (só na prévia; o JSON commitado não a leva) ------------------------
-# Objetivo: o autor olha uma vez e diz qual forma de "aberturas por baixa" o Lakeview desenha.
-DATASETS_TESTE = {
-    # Razão já calculada em SQL, Brasil, uma linha (não reage a filtro): plano de reserva garantido.
-    "teste_razao_brasil": ("TESTE: aberturas por baixa calculada em SQL (Brasil)", f"""
-SELECT ROUND(SUM(aberturas_ultimo_mes) / NULLIF(SUM(baixas_ultimo_mes), 0), 2) AS aberturas_por_baixa_brasil
-FROM ({DATASETS["resumo_mes"][1].strip()})
-"""),
-}
-COLUNAS_TESTE = {"teste_razao_brasil": ["aberturas_por_baixa_brasil"]}
-
-PAGINA_TESTE = [
-    (abertura("t_texto", "Teste (apagar): qual forma do contador desenha?",
-              "Os quatro contadores deveriam mostrar o mesmo número (aberturas por baixa no último mês, Brasil). "
-              "Diga quais aparecem e quais mostram 'Select fields to visualize'."), pos(0, 0, 12, 3)),
-    (contador("t_a", "A: SUM(a) / SUM(b) no widget (forma usada na página 1; reage a filtro)", "resumo_mes",
-              razao("teste_a", "aberturas_ultimo_mes", "baixas_ultimo_mes", forma="divisao")), pos(0, 3, 3, 4)),
-    (contador("t_b", "B: try_divide(SUM(a), SUM(b)) com nome simples (reage a filtro)", "resumo_mes",
-              razao("teste_b", "aberturas_ultimo_mes", "baixas_ultimo_mes", forma="try_divide")), pos(3, 3, 3, 4)),
-    (contador("t_c", "C: razão calculada em SQL, SUM de 1 linha (Brasil, sem filtro)", "teste_razao_brasil",
-              soma("aberturas_por_baixa_brasil")), pos(6, 3, 3, 4)),
-    (contador_desagregado("t_d", "D: razão calculada em SQL, coluna sem agregação (Brasil, sem filtro)",
-                          "teste_razao_brasil", "aberturas_por_baixa_brasil"), pos(9, 3, 3, 4)),
-]
-
-
-def montar_dashboard(com_pagina_teste: bool = False) -> dict:
-    fontes = {**DATASETS, **(DATASETS_TESTE if com_pagina_teste else {})}
-    paginas = PAGINAS + ([("teste", "Teste (apagar)", PAGINA_TESTE)] if com_pagina_teste else [])
+def montar_dashboard() -> dict:
     datasets = [
         {"name": nome, "displayName": titulo, "queryLines": [l + "\n" for l in sql.strip().splitlines()]}
-        for nome, (titulo, sql) in fontes.items()
+        for nome, (titulo, sql) in DATASETS.items()
     ]
-    return {"datasets": datasets, "pages": [_pagina(n, t, w) for n, t, w in paginas]}
+    return {"datasets": datasets, "pages": [_pagina(n, t, w) for n, t, w in PAGINAS]}
 
 
 # --- validação local ----------------------------------------------------------------------------
 
-AGREGACOES = ("SUM(", "AVG(", "PERCENTILE(", "try_divide(SUM(")
+# Formas de campo de widget aceitas: coluna pura, mês de uma data, ou UM agregado simples sobre UMA coluna.
+# Expressão composta (SUM(a) / SUM(b), try_divide(...), SUM(a) - SUM(b)...) é proibida: na prévia o Lakeview
+# mostrou SUM(a) / SUM(b) como se fosse só SUM(a), sem erro. Contas entre agregados vão para o SQL do dataset.
+CAMPO_SIMPLES = re.compile(r"`\w+`|(SUM|AVG)\(`\w+`\)|PERCENTILE\(`\w+`, 0\.5\)|DATE_TRUNC\(\"MONTH\", `\w+`\)")
+AGREGACOES = ("SUM(", "AVG(", "PERCENTILE(")
 # Jargão do projeto que a banca não entende (pedido do autor): não pode aparecer no texto exibido.
 JARGAO = r"\b(estoque|saldo|fluxos?|snapshot|baseline|detec[çc][ãa]o)\b|Δ"
 
 
-def validar(dash: dict, com_pagina_teste: bool = False) -> None:
+def validar(dash: dict) -> None:
     """Falha (SystemExit) com mensagem clara se o JSON tiver referência quebrada, widget sobreposto, página sem
     texto de abertura, contador sem agregação, dataset sem uso ou nome de widget repetido."""
     erros = []
-    fontes = {**DATASETS, **(DATASETS_TESTE if com_pagina_teste else {})}
-    colunas = {**COLUNAS, **(COLUNAS_TESTE if com_pagina_teste else {})}
+    fontes, colunas = DATASETS, COLUNAS
 
     # 1. o dicionário COLUNAS tem de bater com o texto do SELECT (cada coluna aparece como palavra inteira)
     for nome, (_, sql) in fontes.items():
@@ -830,15 +793,14 @@ def validar(dash: dict, com_pagina_teste: bool = False) -> None:
                         and a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]):
                     erros.append(f"{pagina['name']}: '{n1}' e '{n2}' se sobrepõem")
 
-    # 3b. formas que a prévia mostrou NÃO desenhar: try_divide e nome de campo com vírgula (fora da página de teste)
+    # 3b. só campo simples (ver CAMPO_SIMPLES); nome de campo sem vírgula
     for pagina in dash["pages"]:
-        if pagina["name"] == "teste":
-            continue
         for item in pagina["layout"]:
             for q in item["widget"].get("queries", []):
                 for f in q["query"]["fields"]:
-                    if "try_divide" in f["expression"] or "," in f["name"]:
-                        erros.append(f"{item['widget']['name']}: forma de campo que não desenha ({f['name']})")
+                    if not CAMPO_SIMPLES.fullmatch(f["expression"]) or "," in f["name"]:
+                        erros.append(f"{item['widget']['name']}: campo composto ou fora do padrão "
+                                     f"({f['expression']}); faça a conta no SQL do dataset")
 
     # 4. sem jargão no texto exibido (títulos, rótulos, descrições, caixas de texto); nomes de coluna não contam
     for pagina in dash["pages"]:
@@ -902,16 +864,10 @@ def _validar_encodings(widget, encodings, campos_por_query):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gera o JSON do dashboard a partir da gold.")
-    parser.add_argument("--com-pagina-teste", action="store_true",
-                        help="inclui a página temporária 'Teste (apagar)'; só para publicar a prévia")
     parser.add_argument("--saida", default=str(SAIDA), help="arquivo de saída (padrão: o JSON versionado)")
-    args = parser.parse_args()
-    saida = Path(args.saida).resolve()
-    if args.com_pagina_teste and saida == SAIDA:
-        parser.error("com --com-pagina-teste, informe --saida fora do repositório: o JSON versionado não leva a "
-                     "página de teste")
-    dash = montar_dashboard(args.com_pagina_teste)
-    validar(dash, args.com_pagina_teste)
+    saida = Path(parser.parse_args().saida).resolve()
+    dash = montar_dashboard()
+    validar(dash)
     saida.write_text(json.dumps(dash, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"✅ {saida} gerado.")
 

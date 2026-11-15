@@ -57,6 +57,58 @@
       ]
     },
     {
+      "name": "aberturas_por_baixa",
+      "displayName": "Aberturas por baixa, Brasil (último mês e anterior)",
+      "queryLines": [
+        "WITH resumo AS (\n",
+        "WITH meses AS (\n",
+        "    -- Último mês carregado e o anterior (globais: não dependem dos filtros).\n",
+        "    SELECT\n",
+        "        MAX(mes_referencia) AS mes_atual,\n",
+        "        DATE_FORMAT(ADD_MONTHS(TO_DATE(CONCAT(MAX(mes_referencia), '-01')), -1), 'yyyy-MM') AS mes_anterior\n",
+        "    FROM tcc_receita.gold.fato_indicadores_setoriais_mes\n",
+        "),\n",
+        "por_grupo AS (\n",
+        "    SELECT\n",
+        "        s.uf,\n",
+        "        s.porte_empresa,\n",
+        "        s.grande_area_cnae,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_atual,    s.estoque_final_ativas, 0)) AS ativas_atual,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_anterior, s.estoque_final_ativas, 0)) AS ativas_anterior,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_atual,    s.qtd_aberturas, 0))        AS aberturas_atual,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_anterior, s.qtd_aberturas, 0))        AS aberturas_anterior,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_atual,    s.qtd_baixas, 0))           AS baixas_atual,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_anterior, s.qtd_baixas, 0))           AS baixas_anterior,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_atual,    s.crescimento_liquido, 0))  AS saldo_atual,\n",
+        "        SUM(IF(s.mes_referencia = m.mes_anterior, s.crescimento_liquido, 0))  AS saldo_anterior\n",
+        "    FROM tcc_receita.gold.fato_indicadores_setoriais_mes s\n",
+        "    CROSS JOIN meses m\n",
+        "    WHERE s.mes_referencia IN (m.mes_atual, m.mes_anterior)\n",
+        "    GROUP BY s.uf, s.porte_empresa, s.grande_area_cnae\n",
+        ")\n",
+        "SELECT\n",
+        "    uf,\n",
+        "    porte_empresa,\n",
+        "    grande_area_cnae,\n",
+        "    ativas_atual                        AS ativas_ultimo_mes,\n",
+        "    ativas_atual - ativas_anterior      AS ativas_delta,\n",
+        "    aberturas_atual                     AS aberturas_ultimo_mes,\n",
+        "    aberturas_atual - aberturas_anterior AS aberturas_delta,\n",
+        "    baixas_atual                        AS baixas_ultimo_mes,\n",
+        "    baixas_anterior                     AS baixas_mes_anterior,\n",
+        "    aberturas_anterior                  AS aberturas_mes_anterior,\n",
+        "    baixas_atual - baixas_anterior      AS baixas_delta,\n",
+        "    saldo_atual                         AS saldo_ultimo_mes,\n",
+        "    saldo_atual - saldo_anterior        AS saldo_delta\n",
+        "FROM por_grupo\n",
+        ")\n",
+        "SELECT\n",
+        "    ROUND(SUM(aberturas_ultimo_mes)   / NULLIF(SUM(baixas_ultimo_mes), 0), 2)   AS aberturas_por_baixa_ultimo_mes,\n",
+        "    ROUND(SUM(aberturas_mes_anterior) / NULLIF(SUM(baixas_mes_anterior), 0), 2) AS aberturas_por_baixa_mes_anterior\n",
+        "FROM resumo\n"
+      ]
+    },
+    {
       "name": "estoque_mes",
       "displayName": "Empresas ativas no fim de cada mês",
       "queryLines": [
@@ -816,11 +868,11 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "resumo_mes",
+                  "datasetName": "aberturas_por_baixa",
                   "fields": [
                     {
-                      "name": "aberturas_por_baixa",
-                      "expression": "SUM(`aberturas_ultimo_mes`) / SUM(`baixas_ultimo_mes`)"
+                      "name": "sum(aberturas_por_baixa_ultimo_mes)",
+                      "expression": "SUM(`aberturas_por_baixa_ultimo_mes`)"
                     }
                   ],
                   "disaggregated": false
@@ -832,13 +884,13 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "aberturas_por_baixa",
-                  "displayName": "Aberturas por baixa no último mês"
+                  "fieldName": "sum(aberturas_por_baixa_ultimo_mes)",
+                  "displayName": "Aberturas por baixa no último mês (Brasil, não muda com os filtros)"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Aberturas por baixa no último mês",
+                "title": "Aberturas por baixa no último mês (Brasil, não muda com os filtros)",
                 "showDescription": true,
                 "description": "Acima de 1: abrem mais empresas do que fecham."
               }
@@ -1020,11 +1072,11 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "resumo_mes",
+                  "datasetName": "aberturas_por_baixa",
                   "fields": [
                     {
-                      "name": "aberturas_por_baixa_anterior",
-                      "expression": "SUM(`aberturas_mes_anterior`) / SUM(`baixas_mes_anterior`)"
+                      "name": "sum(aberturas_por_baixa_mes_anterior)",
+                      "expression": "SUM(`aberturas_por_baixa_mes_anterior`)"
                     }
                   ],
                   "disaggregated": false
@@ -1036,13 +1088,13 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "aberturas_por_baixa_anterior",
-                  "displayName": "Aberturas por baixa no mês anterior"
+                  "fieldName": "sum(aberturas_por_baixa_mes_anterior)",
+                  "displayName": "Aberturas por baixa no mês anterior (Brasil)"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Aberturas por baixa no mês anterior"
+                "title": "Aberturas por baixa no mês anterior (Brasil)"
               }
             }
           },

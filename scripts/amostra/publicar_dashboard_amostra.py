@@ -5,8 +5,8 @@ Cria (ou atualiza, com --id) um dashboard separado; o dashboard oficial não é 
     export DATABRICKS_WAREHOUSE_ID=<id>
     python scripts/amostra/publicar_dashboard_amostra.py            # cria
     python scripts/amostra/publicar_dashboard_amostra.py --id <id>  # atualiza o mesmo
-    python -m src.gold.dashboard.gerar_dashboard --com-pagina-teste --saida /tmp/teste.lvdash.json
-    python scripts/amostra/publicar_dashboard_amostra.py --id <id> --arquivo /tmp/teste.lvdash.json
+    python -m src.gold.dashboard.gerar_dashboard --saida /tmp/outro.lvdash.json
+    python scripts/amostra/publicar_dashboard_amostra.py --id <id> --arquivo /tmp/outro.lvdash.json
 """
 
 import argparse
@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument("--warehouse", default=os.getenv("DATABRICKS_WAREHOUSE_ID", ""))
     parser.add_argument("--id", default="", help="dashboard_id de uma prévia já criada (atualiza em vez de criar)")
     parser.add_argument("--arquivo", default=str(RAIZ / "src/gold/dashboard/tcc_receita.lvdash.json"),
-                        help="JSON a publicar (ex.: o gerado com --com-pagina-teste)")
+                        help="JSON a publicar (padrão: o JSON versionado)")
     args = parser.parse_args()
     if not args.warehouse:
         parser.error("informe --warehouse ou a variável DATABRICKS_WAREHOUSE_ID")
