@@ -56,4 +56,7 @@ WHERE c.sk_empresa != -1
   AND c.registro_ativo = TRUE 
   AND c.situacao_cadastral_matriz = 'ATIVA';
 
-OPTIMIZE tcc_receita.gold.dashboard_mercado_ativo ZORDER BY (uf, municipio, nome_cnae);
+-- Sem ZORDER BY: o Databricks pode ativar clustering automático (liquid clustering) em tabela gerenciada,
+-- e o Delta recusa ZORDER nesse caso (falhou em 2026-11-14). O OPTIMIZE simples compacta os arquivos e,
+-- se houver clustering, reagrupa pelas colunas escolhidas.
+OPTIMIZE tcc_receita.gold.dashboard_mercado_ativo;
