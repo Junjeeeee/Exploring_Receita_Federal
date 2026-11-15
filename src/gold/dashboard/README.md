@@ -23,11 +23,11 @@ Não roda em job cluster. Opção mais barata para a reunião:
 ## Páginas (uma pergunta por página)
 | Página | Pergunta | Big numbers | Gráficos | Filtros |
 |---|---|---|---|---|
-| 1. Resumo | O estoque está crescendo? | ativas, aberturas, baixas, saldo do último mês + Δ vs. mês anterior; aberturas por baixa | estoque mês a mês; entradas × saídas | UF, porte, área |
-| 2. Quem | Quem abre e quem fecha? | % MEI nas aberturas e nas baixas; setor que mais/menos cresce | composição por porte; saldo e fechamento por 1.000 ativas por área; top 20 CNAEs | UF, área (só contadores e porte) |
-| 3. Onde | Onde cresce mais? | UF com maior/menor saldo por 1.000 ativas | ranking de UF por taxa; tabela de taxas | — (Brasil) |
+| 1. Resumo | O número de empresas ativas está crescendo? | ativas, aberturas, baixas, crescimento líquido do último mês + variação em relação ao mês anterior; aberturas por baixa | ativas mês a mês; passaram a estar ativas × deixaram de estar | UF, porte, área |
+| 2. Quem | Quem abre e quem fecha? | % MEI nas aberturas e nas baixas; setor que mais/menos cresce | composição por porte; crescimento líquido e baixas por 1.000 ativas por setor; top 20 CNAEs | UF, área (só contadores e porte) |
+| 3. Onde | Onde cresce mais? | UF que mais/menos cresce (crescimento líquido por 1.000 ativas) | ranking de UF por taxa; tabela de taxas | — (Brasil) |
 | 4. Como fecha | Por que e com que idade fecham? | % falência; idade mediana na baixa; % < 2 anos; reativações | baixas por categoria de motivo; por faixa de idade; baixas/inaptidões/suspensões/reativações por mês; eventos por tipo | UF, porte, área |
-| 5. Mercado ativo | Quem são os concorrentes locais? | ativas | porte, bairro, área; 1.000 maiores empresas (LGPD) | UF, município, CNAE |
+| 5. Mercado ativo | Quem são os concorrentes locais? | ativas | porte, 20 maiores bairros do município, setor; 1.000 maiores empresas (LGPD) | UF, município, bairro, CNAE (todos os widgets) |
 | 6. Sobre os dados | Como ler? | — | notas fixas; Selic/IPCA (contexto) | — |
 
 Como os números respeitam os filtros (filtro de campo = `WHERE` nas linhas do dataset):
@@ -35,14 +35,27 @@ Como os números respeitam os filtros (filtro de campo = `WHERE` nas linhas do d
 - percentuais = `AVG` de indicador 0/100 em `fluxos_empresa` (uma linha por empresa com abertura ou baixa);
 - taxas por 1.000 ativas são razões de somas: vêm prontas (`taxas_setor`, `taxas_uf`, `extremos_*`) e são Brasil.
 
+Texto exibido sem jargão: `validar()` recusa "estoque", "saldo", "fluxo", "snapshot", "baseline", "detecção" e "Δ"
+em títulos, rótulos, descrições e textos (nomes de coluna não contam). "Crescimento líquido" é definido onde aparece.
+
+Ordem das barras: rankings de uma série ordenados por valor (maior no topo nas horizontais, à esquerda nas
+verticais); séries de cor por porte em ordem fixa `ORDEM_PORTE` (MEI > ME > DEMAIS > EPP > não informado), a maior
+na base da pilha; faixas de idade em ordem natural (`ORDEM_FAIXA_IDADE`). Sintaxe `custom-order` copiada dos
+dashboards de exemplo da Databricks (dbdemos).
+
+Mercado ativo: os três datasets usam o mesmo bairro normalizado (`BAIRRO`: nulo/vazio → `NAO INFORMADO`);
+`mercado_bairros` tem grão bairro × CNAE (agregado) restrito aos 20 maiores bairros de cada município, então os
+quatro filtros valem para todos os widgets.
+
 Widgets de maior risco de formato (sintaxe não vista em JSON exportado pelo workspace):
-`c1_ab_por_baixa` e `c1_ab_por_baixa_ant` (`try_divide(SUM(..), SUM(..))`). `c4_idade` usa `PERCENTILE(col, 0.5)`,
+`c1_ab_por_baixa` e `c1_ab_por_baixa_ant` (`try_divide(SUM(..), SUM(..))`). `c4_idade` usa `PERCENTILE(col, 0.5)`; a ordem das séries de cor de `b2_porte` (`custom-order` no encoding de cor) e qual ponta vai na base da pilha,
 forma vista num dashboard exportado pela Databricks. Se um deles quebrar, reconfigurar pela UI e trazer o JSON
 regravado para o gerador.
 
 ## Regras de leitura
 - Fluxos por **mês de detecção** no snapshot (extração ~dia 10); empresa = matriz do CNPJ raiz; 2023-05 é baseline
-  (sem fluxo); saldo = entradas − saídas do estoque de ativas (inclui reativações, inaptidões, suspensões).
+  (sem fluxo); crescimento líquido = passaram a estar ativas − deixaram de estar ativas (inclui reativações,
+  inaptidões, suspensões).
 - Aberturas vêm só de `fato_empresa_mes` / `fato_indicadores_setoriais_mes`; a OBT não conta abertura.
 - Idade na baixa = data real da baixa − início de atividade (`fato_empresa_mes.idade_na_baixa_meses`).
 - Limitação: `LIMIT` em dataset (`mercado_empresas`, 1.000 maiores do Brasil) é aplicado antes dos filtros de página.

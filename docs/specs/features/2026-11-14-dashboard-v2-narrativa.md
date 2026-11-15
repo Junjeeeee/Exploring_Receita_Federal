@@ -148,6 +148,21 @@ não expõe CNPJ nem nome (só UF, porte, área e indicadores). Impacto no TCC: 
 Resultados passam a seguir as 6 perguntas; "idade na baixa" é definição nova a descrever na Metodologia
 (ver `docs/tcc.md`).
 
+### 2.7 Ajustes pós-prévia (autor, 2026-11-15)
+
+1. **Linguagem**: nada de "estoque", "saldo", "fluxo", "snapshot", "baseline", "detecção" nem "Δ" no texto exibido
+   (verificado em `validar()`). "Crescimento líquido" = passaram a estar ativas − deixaram de estar ativas,
+   definido na descrição de cada widget que o usa. Grande área aparece como "Setor"; CNAE como "Atividade".
+2. **Ordem das barras**: série de cor por porte em ordem fixa (MEI > ME > DEMAIS > EPP > não informado; estável
+   na amostra nas aberturas e nas baixas), maior na base e primeiro na legenda (`sort: custom-order` no encoding de
+   cor, sintaxe dos dashboards de exemplo da Databricks). Faixas de idade em ordem natural. Barras de uma série:
+   por valor, maior no topo (horizontais) ou à esquerda (verticais).
+3. **Bairros reagem a todos os filtros** do Mercado ativo: `mercado_bairros` passa a grão bairro × CNAE, ainda
+   restrito aos 20 bairros com mais ativas de cada município (contando todas as atividades). Com filtro de CNAE, as
+   barras mostram as empresas daquele CNAE nesses 20 bairros (não os 20 maiores bairros daquele CNAE).
+4. **Filtro de bairro** no Mercado ativo, em todos os widgets; bairro nulo/vazio vira `NAO INFORMADO` (mesma
+   expressão `BAIRRO` nos três datasets). Gold inalterada.
+
 ## 3. Tarefas
 
 - [x] T1 `fato_empresa_mes.sql`: `idade_na_baixa_meses`, `faixa_idade_baixa`; DQ em `dq_gold.sql`
@@ -185,6 +200,11 @@ Resultados passam a seguir as 6 perguntas; "idade na baixa" é definição nova 
 - Prévia `01f1e03111521e8fa0a9cf1aa4f96e4e` atualizada e lida de volta pela API: 6 páginas, 54 widgets,
   17 datasets apontando para `amostra_*`. **Renderização não conferida** (sem navegador no ambiente).
   Maior risco: `c1_ab_por_baixa`, `c1_ab_por_baixa_ant` (`try_divide(SUM, SUM)`), depois `c4_idade` (`PERCENTILE`).
+
+**2026-11-15 — ajustes pós-prévia (§ 2.7)** na amostra: 17 datasets com linhas > 0; widgets simulados sem erro
+com filtros `municipio = 'RIO DE JANEIRO' AND nome_cnae = 'CABELEIREIROS…'` (contador 418, 19 bairros),
+`… AND bairro = 'COPACABANA'` (contador 231 = barra do bairro 231) e `bairro = 'NAO INFORMADO'` (138 empresas).
+Prévia atualizada e lida de volta (6 páginas, 55 widgets, `sort` de cor presente). Renderização não conferida.
 
 **Para a base real:** nenhuma migração além da já prevista (`fato_empresa_mes` está no `DROP` de
 `src/jobs/migracoes/2026-11-14_semantica_eventos.sql`); nenhum arquivo SQL novo, Job inalterado.
