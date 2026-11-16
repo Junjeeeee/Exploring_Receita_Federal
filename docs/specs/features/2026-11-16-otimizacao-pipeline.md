@@ -9,7 +9,7 @@ está em [`2026-11-16-otimizacao-revisao.md`](2026-11-16-otimizacao-revisao.md).
 |---|---|---|
 | 0 — Linha de base | [`../../medicoes/2026-11-16-linha-de-base.md`](../../medicoes/2026-11-16-linha-de-base.md) | ✅ medida (tempo, DBU, volumes, hipóteses); leitura e shuffle por tarefa herdados do B20 |
 | 1 — Ganhos baratos | esta spec, §3 | 🔧 código pronto; bronze ainda não executada |
-| 1b — Bronze das 4 tabelas grandes | a escrever (`2026-11-16-otimizacao-bronze.md`) | ⬜ entrou pela linha de base (51% do tempo) |
+| 1b — Bronze das 4 tabelas grandes | [`2026-11-16-otimizacao-bronze.md`](2026-11-16-otimizacao-bronze.md) | 📝 desenho escrito (rascunho, sem revisão); entrou pela linha de base (51% do tempo) |
 | 2 — SCD2 da silver | [`2026-11-16-otimizacao-scd2.md`](2026-11-16-otimizacao-scd2.md) | 📝 desenho revisado; implementação espera a amostra |
 | 3 — Log, fato e dashboard | [`2026-11-16-otimizacao-log-fato-dashboard.md`](2026-11-16-otimizacao-log-fato-dashboard.md) | 📝 desenho revisado; implementação espera a amostra |
 | 4 — Execução em blocos | esta spec, §4 | ⬜ |
@@ -43,8 +43,8 @@ volume de shuffle, não por falta de memória (diagnóstico B20 em `docs/backlog
 - Landing fica **fora**: roda no computador do usuário e custa quase nada (decisão do usuário, 2026-11-16).
 - Bronze (B17) ficava **fora** desta rodada, a menos que a linha de base mostrasse que ela domina. **A linha de
   base mostrou:** 51% do tempo de execução do run completo de 4 meses (12.065 de 23.524 s; as 4 tabelas grandes
-  somam 39,6%), e o custo é linear no número de meses. A bronze **entra** como fase 1b (desenho em spec própria,
-  a escrever); as fases 2 e 3 seguem como estão.
+  somam 39,6%), e o custo é linear no número de meses. A bronze **entra** como fase 1b (desenho em spec
+  própria); as fases 2 e 3 seguem como estão.
 - Regras do `CLAUDE.md` continuam valendo (LGPD, bronze sem regra de negócio, NULL ≠ FALSE etc.).
 
 ## 3. Fase 1 — ganhos baratos
