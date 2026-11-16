@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from pyspark.sql import Column, SparkSession
 import pyspark.sql.functions as F
 from src.bronze.data_quality import validar_schema, validar_volumetria
+from src.bronze.optimize_write import CONF_SESSAO, VARIAVEL_AMBIENTE, resolver_modo_optimize_write
 
 DESCRICAO_COLUNAS_METADADOS: Dict[str, str] = {
     "change_hash": "Metadado: Hash SHA-256 serializado dos atributos de negócio usados na deteção de mudanças.",
@@ -202,18 +203,40 @@ def _remover_copias_exatas(df):
     return df.dropDuplicates()
 
 
+def _gravar_sem_optimize_write_na_sessao(spark: SparkSession, writer, nome_completo_tabela: str):
+    """Desliga o optimized write na sessão só durante esta escrita e restaura o valor anterior (modo "sessao")."""
+    anterior = spark.conf.get(CONF_SESSAO, None)
+    spark.conf.set(CONF_SESSAO, "false")
+    try:
+        writer.saveAsTable(nome_completo_tabela)
+    finally:
+        if anterior is None:
+            spark.conf.unset(CONF_SESSAO)
+        else:
+            spark.conf.set(CONF_SESSAO, anterior)
+
+
 def ingerir_tabela_bronze(
     spark: SparkSession,
     config: TabelaBronzeConfig,
     mes_ini: Optional[str] = None,
     mes_fim: Optional[str] = None,
+    modo_optimize_write: Optional[str] = None,
 ):
+    """Ingestão mês a mês. `modo_optimize_write` ("nao" | "writer" | "sessao") controla o optimized write só na
+    escrita das tabelas mensais; None = lê a variável de ambiente BRONZE_DESLIGAR_OPTIMIZE_WRITE; vazio = "nao"
+    (comportamento anterior). Ver src/bronze/optimize_write.py."""
     configurar_ambiente_unity_catalog(spark)
     nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
     pasta_landing = _obter_pasta_landing(config)
     meses = gerar_range_meses(mes_ini, mes_fim)
     colunas_finais = []
     bucket = obter_bucket_landing()
+    modo_ow = resolver_modo_optimize_write(
+        modo_optimize_write if modo_optimize_write is not None else os.getenv(VARIAVEL_AMBIENTE)
+    )
+    if config.is_snapshot_mensal and modo_ow != "nao":
+        print(f"  Optimized write desligado na escrita mensal (modo '{modo_ow}').")
 
     if config.is_snapshot_mensal:
         iteracoes = [(mes, f"s3://{bucket}/landing/receita_federal/{pasta_landing}/mes_referencia={mes}/") for mes in meses]
@@ -266,7 +289,12 @@ def ingerir_tabela_bronze(
         writer = df_bronze.write.format("delta").mode("overwrite").option("mergeSchema", "true")
         if config.is_snapshot_mensal:
             writer = writer.option("replaceWhere", f"mes_referencia = '{mes_referencia}'").partitionBy("mes_referencia")
-        writer.saveAsTable(nome_completo_tabela)
+            if modo_ow == "writer":
+                writer = writer.option("optimizeWrite", "false")
+        if config.is_snapshot_mensal and modo_ow == "sessao":
+            _gravar_sem_optimize_write_na_sessao(spark, writer, nome_completo_tabela)
+        else:
+            writer.saveAsTable(nome_completo_tabela)
         colunas_finais = df_bronze.columns
 
     if colunas_finais:
