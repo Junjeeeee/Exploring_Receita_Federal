@@ -328,6 +328,35 @@ SELECT
                ' linhas com taxa_fechamento_por_mil acima de 1000.'))
 FROM resumo r;
 
+-- 3b. Cobertura de meses do painel (fase 3): o painel é carregado só com os meses da janela (REPLACE WHERE), então
+--     pode ficar com buraco se a carga completa da migração for pulada — e os testes acima, que olham só a janela,
+--     não perceberiam. Aqui se compara o CONJUNTO de meses do painel com o do fato, do início do histórico até o
+--     fim da janela (meses depois da janela ainda podem não ter sido processados numa carga em blocos). Lê só a
+--     coluna de partição das duas tabelas.
+WITH params AS (
+    SELECT '{{mes_referencia_final}}' AS mes_fim
+),
+meses_fato AS (
+    SELECT DISTINCT f.mes_referencia FROM tcc_receita.gold.fato_empresa_mes f CROSS JOIN params p
+    WHERE f.mes_referencia <= p.mes_fim
+),
+meses_painel AS (
+    SELECT DISTINCT s.mes_referencia FROM tcc_receita.gold.fato_indicadores_setoriais_mes s CROSS JOIN params p
+    WHERE s.mes_referencia <= p.mes_fim
+),
+resumo AS (
+    SELECT
+        (SELECT COUNT(*) FROM (SELECT * FROM meses_fato EXCEPT SELECT * FROM meses_painel)) AS faltando,
+        (SELECT COUNT(*) FROM (SELECT * FROM meses_painel EXCEPT SELECT * FROM meses_fato)) AS sobrando,
+        (SELECT MIN(mes_referencia) FROM (SELECT * FROM meses_fato EXCEPT SELECT * FROM meses_painel)) AS exemplo
+)
+SELECT
+    ASSERT_TRUE(r.faltando = 0 AND r.sobrando = 0,
+        CONCAT('ERRO DQ [fato_indicadores_setoriais_mes]: meses do painel diferem dos do fato (', CAST(r.faltando AS STRING),
+               ' faltando, ex.: ', COALESCE(r.exemplo, '?'), '; ', CAST(r.sobrando AS STRING),
+               ' sobrando). Carga completa da migracao pulada?'))
+FROM resumo r;
+
 -- 4. dashboard_mercado_ativo = ativas do último mês do fato. Só se aplica quando o último mês do fato é o
 --    último mês da dim_empresa (a fotografia do mercado é sempre a versão corrente); senão o teste é pulado.
 WITH ultimo_fato AS (
