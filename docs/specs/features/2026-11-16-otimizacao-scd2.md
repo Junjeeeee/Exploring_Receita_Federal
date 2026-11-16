@@ -1,7 +1,7 @@
 # Feature: SCD2 da silver_intermediate em duas fases (otimização, fase 2)
 
-**Status:** rascunho revisado (incorpora a [revisão adversarial](2026-11-16-otimizacao-revisao.md); tabela na §12) —
-aguardando aprovação do usuário (decisões na §9)
+**Status:** T0–T4 implementadas e validadas na amostra (2026-11-16; resultados na §11, desvios na §11.1) —
+**preparado, não executado no cluster**; falta a T5 (medição na base real) e a T6 (documentação)
 **Camadas afetadas:** silver_intermediate (`empresas`, `estabelecimentos`, `dados_simples`, `socios`)
 **Branch:** `otimizacao_pipeline`
 **Spec guarda-chuva:** [`2026-11-16-otimizacao-pipeline.md`](2026-11-16-otimizacao-pipeline.md) (princípios no §2)
@@ -664,7 +664,7 @@ custa ~24 GB de troca larga mais o join do `MERGE` com a tabela inteira.
 
 ## 8. Tarefas (uma tabela por vez; commit próprio cada)
 
-- [ ] **T0 — Preparação** (sem escrita na base real)
+- [x] **T0 — Preparação** (sem escrita na base real)
   - Reautenticar o CLI e rodar, num lote no warehouse: Q1 `DESCRIBE DETAIL` + `SHOW TBLPROPERTIES` das bronzes e
     SCD2 (inclusive se `delta.enableDeletionVectors` **já** está ligado: nesse caso a D4 já está decidida); Q2
     `SELECT valid_since, COUNT(*)` por SCD2 (calibra os 20% do mês denso); Q6 `DESCRIBE HISTORY` das SCD2; D1/D2
@@ -675,11 +675,11 @@ custa ~24 GB de troca larga mais o join do `MERGE` com a tabela inteira.
     unicidade de `(pk, valid_since)`, copiando o molde de `dq_socios.sql:19-42`. Esta é a única tarefa de
     contiguidade; a fase 3 depende dela (R19).
   - **Aceite:** Q1/Q2 anotadas na §11; DQ novos passam na referência; unicidade confirmada.
-- [ ] **T1 — `dados_simples.sql`.** **Aceite:** C1–C9, C12–C15 com 0/0 e contagens iguais; DQ passa;
+- [x] **T1 — `dados_simples.sql`.** **Aceite:** C1–C9, C12–C15 com 0/0 e contagens iguais; DQ passa;
   `checar_sql_cluster.py` passa.
-- [ ] **T2 — `estabelecimentos.sql`.** **Aceite:** igual à T1 + C11 e C16.
-- [ ] **T3 — `empresas.sql`.** **Aceite:** igual à T1.
-- [ ] **T4 — `socios.sql`.** **Aceite:** igual à T1 + C10, C11 (socios) e a conferência de fronteira do C3;
+- [x] **T2 — `estabelecimentos.sql`.** **Aceite:** igual à T1 + C11 e C16.
+- [x] **T3 — `empresas.sql`.** **Aceite:** igual à T1.
+- [x] **T4 — `socios.sql`.** **Aceite:** igual à T1 + C10, C11 (socios) e a conferência de fronteira do C3;
   com o mês anterior faltando, a instrução 1 falha; `dq_socios` passa.
 - [ ] **T5 — Medição e planos na base real** (§6.2 e §3.8), com o usuário ligando NAT/cluster. **Aceite:**
   EXCEPT 0/0 contra o `DEEP CLONE`, depois de `05..08` e depois do mês incremental; números de `05..08` lado a
@@ -688,7 +688,8 @@ custa ~24 GB de troca larga mais o join do `MERGE` com a tabela inteira.
 - [ ] **T6 — Documentação:** `docs/specs/silver_intermediate.md`, `src/silver_intermediate/readme.md`,
   `docs/decisions.md` (D-18 "SCD2 em duas fases", com D1, D3–D8), `docs/backlog.md` (B20 parte silver) e
   sugestão em `docs/tcc.md`, se o texto descreve o `MERGE`.
-- [ ] **T7 — (se D4 = sim)** ligar *deletion vectors* nas SCD2 e medir um mês incremental com e sem.
+- [ ] ~~**T7 — (se D4 = sim)** ligar *deletion vectors*~~ — **sem objeto**: já estão ligados nas quatro SCD2
+  (T0, Q1). Resta anotar `numDeletionVectorsAdded` do `MERGE` na T5.
 
 ## 9. Decisões para o usuário
 
@@ -697,7 +698,7 @@ custa ~24 GB de troca larga mais o join do `MERGE` com a tabela inteira.
 | D1 | Desenho | (a) **duas fases** (esta spec); (b) uma passada larga: o mesmo fluxo de ações, mas a bronze larga atravessa a troca uma vez e sai já com os atributos | **(a)**. No incremental, a troca larga cai de ~57 M para ~1 M linhas por mês. (b) é mais simples (sem instruções 3–4, sem lista difundida) e já corta ~⅔ do shuffle de hoje; fica como plano B se a lista difundida der problema. **O que se perde com (b):** cada mês incremental embaralha a bronze larga inteira |
 | D2 | ~~Prefixo de 16 caracteres do hash~~ | — | **retirada**: decisão do gerente, hash completo (mais fácil de defender; a troca estreita fica ~1,5× maior) |
 | D3 | Escrita | (a) **`MERGE` único** (atômico); (b) `MERGE` estreito + `INSERT` separados (dois *commits*) | **(a)**. (b) poupa na carga inicial uma troca larga das versões novas, mas uma falha entre os dois deixa pks sem versão corrente. Uma execução seguinte de outra janela transformaria isso num buraco no histórico e em "primeiras aparições" falsas no log (R3). **O que se perde com (a):** na carga inicial, as versões novas passam pelo join do `MERGE` (≈ 1 troca larga a mais, uma vez por reconstrução) |
-| D4 | *Deletion vectors* nas SCD2 | ligar ou não | **ligar depois da T5**, se o DBR 15.4 os usar no `MERGE` (`numDeletionVectorsAdded`) e se nenhum leitor externo quebrar. É reversível (`ALTER TABLE ... DROP FEATURE deletionVectors`, DBR 14.1+). Conferir na T0 se já estão ligados |
+| D4 | *Deletion vectors* nas SCD2 — **perdeu o objeto: já ligados (T0, Q1)** | ligar ou não | **ligar depois da T5**, se o DBR 15.4 os usar no `MERGE` (`numDeletionVectorsAdded`) e se nenhum leitor externo quebrar. É reversível (`ALTER TABLE ... DROP FEATURE deletionVectors`, DBR 14.1+). Conferir na T0 se já estão ligados |
 | D5 | Mês faltando na bronze dentro da janela | (a) falhar (todas as tabelas); (b) seguir (hoje, nos três não-socios) | **(a)**: igual a socios; um mês faltando é quase sempre erro de ingestão, e falhar antes de escrever é mais seguro |
 | D6 | Socios: snapshot parcial | acrescentar à instrução 1 "linhas(M) ≥ 95% de linhas(M−1)" ou deixar só o DQ de saídas (5%) | **acrescentar**: uma contagem por partição impede gravar saídas falsas, em vez de só acusá-las depois |
 | D7 | Diferenças intencionais 1 e 2 da §4 | aceitar ou replicar o antigo | **aceitar**: só ocorrem com bronze alterada, e o novo é o consistente (igual a socios) |
@@ -725,6 +726,81 @@ custa ~24 GB de troca larga mais o join do `MERGE` com a tabela inteira.
   Volumes da §2.1 vêm das contagens de 2026-11-15.
 - 2026-11-16: spec revista após a revisão adversarial (§12). Mudanças de desenho: hash completo, `MERGE` único
   atômico, busca num só *scan*, sem `rn_busca`, dedup incluindo `B_CTX`.
+- 2026-11-16 — **T0 (tabelas reais, só leitura, warehouse):**
+  - Q1: as 4 bronzes são particionadas por `mes_referencia`; **as 4 SCD2 e as 4 bronzes já têm
+    `delta.enableDeletionVectors = true`** (padrão do workspace). A **D4 perdeu o objeto**: não há nada a ligar
+    (a T7 vira só "medir `numDeletionVectorsAdded` na T5"). `empresas` e `estabelecimentos` da silver têm
+    *clustering* automático (`clusterByAuto = true`, colunas escolhidas pela otimização preditiva:
+    `valid_until, valid_since` e `valid_until, identificador_matriz_filial, valid_since`), e o histórico mostra
+    `OPTIMIZE`/`VACUUM` automáticos: reforça o `DEEP CLONE` da §6.2. `dados_simples` e `socios` sem clustering.
+  - Q2 (versões por `valid_since` ÷ linhas da bronze do mês): 06–08 abrem 0,7%–1,7% (empresas 0,7–0,9%,
+    estabelecimentos 1,4–1,7%, dados_simples 1,3–1,5%, socios 1,7–2,3%). O limiar de 20% do mês denso separa
+    com folga o 1º mês (100%) dos demais.
+  - Q6: o `MERGE` da carga inicial gastou quase todo o tempo materializando a fonte
+    (`materializeSourceTimeMs` / `executionTimeMs`: dados_simples 1555/1682 s, socios 1336/1494 s, empresas
+    365/436 s).
+  - D1 da revisão (B16): linhas a mais que pks distintas por mês: empresas 2–3, socios 6, estabelecimentos e
+    dados_simples 0. Na amostra de 1%: 0 nas quatro (por isso o C11 sintético).
+  - D2 da revisão: nas 4 SCD2 reais, 0 pks sem exatamente uma corrente e 0 versões descontínuas.
+  - Unicidade de `(pk, mes, change_hash)` na bronze da amostra: confirmada nas 4 (linhas = distintas; também
+    `(pk, mes)` única e nenhuma `pk` nula).
+- 2026-11-16 — **T0 (amostra):** referência gerada com o código anterior (`05..08`, tabela vazia) em
+  `tcc_receita.amostra_f2` e copiada (`DEEP CLONE`) para `tcc_receita.amostra_f2_ref`. Os DQ novos passam nas 4
+  referências. Versões/correntes: dados_simples 367.669/362.213; empresas 549.779/546.853; estabelecimentos
+  593.991/579.547; socios 242.868/234.865.
+
+- 2026-11-16 — **T1–T4 (amostra, warehouse, código novo × referência; "OK" = `EXCEPT ALL` 0 nos dois
+  sentidos, contagens por `valid_since` iguais e DQ novo passando):**
+
+  | Cenário | dados_simples | estabelecimentos | empresas | socios |
+  |---|---|---|---|---|
+  | C1–C8 | OK | OK | OK | OK |
+  | C4 (`MERGE` da reexecução: inseridas/atualizadas/apagadas) | 0/0/0 | 0/0/0 | 0/0/0 | 0/0/0 |
+  | C6 (`MERGE`: inseridas/atualizadas) | 4.681/1.700 | 7.706/4.403 | 4.077/882 | 4.194/2.420 |
+  | C7 (`MERGE`: inseridas/apagadas) | 100/100 | 100/100 | 100/100 | 100/100 |
+  | C9, C12 (falha na instrução 1, nada gravado) | OK | OK | OK | OK |
+  | C11 (B16 sintético, 200 pks, mesmo carimbo) | OK | OK | OK | OK (mês de contexto 06) |
+  | C13 (instruções 0–4 sem `MERGE`, depois a janela) | OK | OK | OK | OK |
+  | C14 (07 todo com hash novo; `tmp_scd2_meses` marca 07 denso) | OK | OK | OK | OK |
+  | C15 (limite 10 na instrução 4: falha na instrução 4, nada gravado) | OK | OK | OK | OK |
+  | C16 (bronze diferente) | — | só diferença 1 da §4 | — | 0 diferenças |
+
+  Linhas da referência: dados_simples 367.669; estabelecimentos 593.991; empresas 549.779; socios 242.868.
+  **C16 em estabelecimentos:** todas as diferenças estão nas 50 pks removidas de 07 (diferença 1): o antigo
+  mantém 79 linhas que o novo não tem (as 50 versões de 07 + fins ajustados), o novo tem 29 linhas
+  (vigências reajustadas). Nas 50 pks com hash trocado, 0 diferenças (a diferença 2 não aparece porque a cópia
+  mantém o mesmo `bronze_processed_at`). Observação: no novo, uma pk cuja única versão começa no mês
+  reprocessado e que some dele fica sem versão mesmo existindo no mês seguinte da bronze; reprocessar até o
+  fim do histórico resolve (é a semântica aceita na D7).
+  **Socios:** C3 na fronteira tem 639 saídas e 1 retorno em 07 (contexto 06 no bloco anterior), então o
+  cenário prova a fronteira; C10 / Q5 = 0 primeiras versões inativas; com 06 apagado da bronze, a janela
+  `07..08` falha na instrução 1; com 10% das linhas de 07 apagadas, `05..08` falha na instrução 1 (D6).
+  **DQ novos:** disparam em cópias quebradas de propósito (pk sem corrente, versão descontínua, versão
+  repetida). `checar_sql_cluster.py` passa nos quatro arquivos. O gerador do Job não muda (`gerar_job --checar`:
+  as `tmp_scd2_*` são escritas e lidas no mesmo arquivo e não entram como dependência).
+
+## 11.1 Desvios da implementação (T0–T4)
+
+Nenhum muda o resultado; todos foram validados pelos cenários da §6.1.
+1. **Instrução 1 sem `to_date`:** a contagem esperada de meses usa `CAST(try_to_timestamp(mes, 'yyyy-MM') AS DATE)`,
+   que devolve NULL (e faz a asserção falhar) com ANSI ligado ou desligado; `to_date` de mês inválido daria erro
+   só com ANSI. O mesmo vale para o mês anterior (`mes_ant`) e o mês seguinte da inativa em socios.
+2. **Socios, instrução 1:** a guarda `EXISTS` antiga virou redundante (a contagem de meses já falha com a
+   bronze vazia, e a validação agora é instrução própria, fora do `MERGE`). A D6 foi implementada como
+   "cada mês de `[mes_ini−1, mes_fim]` tem ≥ 95% das linhas do mês anterior" (`LAG` sobre ≤ 13 contagens por
+   partição), na mesma instrução.
+3. **Socios, `presenca`:** o mês seguinte é calculado uma vez como coluna (`mes_seguinte`) em vez de repetido
+   dentro do `INLINE`; o resto da §3.6 está como escrito.
+4. **DQ de unicidade de `(pk, valid_since)`** também em `dq_socios` (a premissa do `MERGE` vale para as quatro).
+5. **Arquivos com 9 instruções** (o `CREATE SCHEMA` e o `CREATE TABLE` são duas), não 7.
+6. **Ambiente de validação:** em vez de `amostra_ref`/`amostra_bronze_teste`, os schemas `amostra_f2` (candidatas
+   e tabelas de trabalho), `amostra_f2_ref` (referência) e `amostra_f2_bt` (bronze de teste), para não tocar
+   nas tabelas `amostra_*` que a fase 3 lê. O runner ganhou `--schemas camada=amostra_x,...`. A referência foi
+   regenerada com o código anterior (não reaproveitada de `amostra_silver_intermediate`).
+7. **C13** foi rodado como: do zero `05..06`; instruções 0–4 de `07..08` (sem o `MERGE`); `07..08` inteiro.
+8. **C11** rodou nas quatro tabelas (o B16 real existe em empresas e socios, D1 da T0), com 200 pks duplicadas,
+   mesmo `bronze_processed_at`, `change_hash` e um atributo diferentes. **C16** rodou em estabelecimentos e,
+   como evidência extra, em socios.
 
 ## 12. Achados da revisão → o que foi feito
 
