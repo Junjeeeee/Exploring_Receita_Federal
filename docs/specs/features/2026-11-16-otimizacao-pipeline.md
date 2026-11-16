@@ -2,14 +2,15 @@
 
 Status: **em andamento** (aprovado pelo usuário em 2026-11-16). Branch: `otimizacao_pipeline`.
 
-Spec guarda-chuva. O desenho detalhado de cada fase fica em spec própria:
+Spec guarda-chuva. O desenho detalhado de cada fase fica em spec própria; a revisão crítica das fases 2 e 3
+está em [`2026-11-16-otimizacao-revisao.md`](2026-11-16-otimizacao-revisao.md).
 
 | Fase | Spec | Estado |
 |---|---|---|
-| 0 — Linha de base | [`../../medicoes/2026-11-16-linha-de-base.md`](../../medicoes/2026-11-16-linha-de-base.md) | ⬜ |
-| 1 — Ganhos baratos | esta spec, §3 | ⬜ |
-| 2 — SCD2 da silver | [`2026-11-16-otimizacao-scd2.md`](2026-11-16-otimizacao-scd2.md) | ⬜ |
-| 3 — Log, fato e dashboard | [`2026-11-16-otimizacao-log-fato-dashboard.md`](2026-11-16-otimizacao-log-fato-dashboard.md) | ⬜ |
+| 0 — Linha de base | [`../../medicoes/2026-11-16-linha-de-base.md`](../../medicoes/2026-11-16-linha-de-base.md) | ⏸ esqueleto; espera o login do Databricks |
+| 1 — Ganhos baratos | esta spec, §3 | 🔧 código pronto; bronze ainda não executada |
+| 2 — SCD2 da silver | [`2026-11-16-otimizacao-scd2.md`](2026-11-16-otimizacao-scd2.md) | 📝 desenho revisado; implementação espera a amostra |
+| 3 — Log, fato e dashboard | [`2026-11-16-otimizacao-log-fato-dashboard.md`](2026-11-16-otimizacao-log-fato-dashboard.md) | 📝 desenho revisado; implementação espera a amostra |
 | 4 — Execução em blocos | esta spec, §4 | ⬜ |
 
 ## 1. Requisito
@@ -117,7 +118,8 @@ muda depois da medida (via `gerar_job.py`).
 ## 4. Fase 4 — execução em blocos
 
 1. Job parametrizado para rodar blocos de meses (C-21: timeout de 4 h não comporta a janela inteira).
-2. Reextração de `empresas` na landing com a máscara ampliada (D-16).
+2. Reextração de `empresas` na landing com a máscara ampliada (D-16), **antes** da carga da janela completa
+   (senão a cadeia inteira teria de ser reprocessada de novo).
 3. Piloto: **12 meses** (2023-05 a 2024-04). Medir custo e tempo por mês; só então liberar o restante.
 4. NAT: ligar antes e desligar depois de cada execução (`scripts/aws/`).
 
@@ -127,4 +129,5 @@ muda depois da medida (via `gerar_job.py`).
 - [ ] Amostra: tabelas das fases 2 e 3 idênticas às atuais (ou diferença explicada na spec).
 - [ ] Base real, 4 meses: tempo total da cadeia silver → gold cai pelo menos pela metade.
 - [ ] Custo por mês processado conhecido e estável do 1º ao 12º mês do piloto.
-- [ ] Dashboard abre sem corte de linhas com 12 meses.
+- [ ] Dashboard com 12 meses: cada página responde em tempo aceitável a um clique de filtro (o Lakeview não corta
+      dataset; acima de 100 mil linhas ou 100 MB cada interação roda a consulta inteira no warehouse).
