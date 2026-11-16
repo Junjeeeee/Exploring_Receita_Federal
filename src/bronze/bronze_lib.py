@@ -6,7 +6,13 @@ from dateutil.relativedelta import relativedelta
 from typing import Dict, List, Optional
 from pyspark.sql import Column, SparkSession
 import pyspark.sql.functions as F
-from src.bronze.data_quality import validar_schema, validar_volumetria
+from src.bronze.data_quality import (
+    checar_volumetria,
+    ler_historico_volumetria,
+    media_volumetria_anterior,
+    registrar_volumetria,
+    validar_schema,
+)
 from src.bronze.optimize_write import CONF_SESSAO, VARIAVEL_AMBIENTE, resolver_modo_optimize_write
 
 DESCRICAO_COLUNAS_METADADOS: Dict[str, str] = {
@@ -301,47 +307,86 @@ def ingerir_tabela_bronze(
         aplicar_comentarios_uc(spark, config)
     print(f"✅ Ingestão e documentação finalizadas: {nome_completo_tabela}\n")
 
+
+def _metricas_dq_por_mes(df_tabela, config: TabelaBronzeConfig, meses: List[str]) -> Dict[str, dict]:
+    """Uma passada pela tabela: por mês, linhas, change_hash nulos, PKs nulas/vazias e PKs repetidas.
+
+    Lê só `mes_referencia` (partição), `change_hash` e `pk`, restrito aos meses da execução. Com pk, agrega
+    primeiro por (mês, pk), o que dá as PKs repetidas (P1) sem uma segunda leitura; as demais métricas são
+    somas dessas linhas, idênticas às contagens linha a linha da versão antiga. Mês sem linhas não aparece.
+    """
+    tem_pk = "pk" in df_tabela.columns
+    if config.is_snapshot_mensal:
+        df = df_tabela.filter(F.col("mes_referencia").isin(meses)).select(
+            F.col("mes_referencia").alias("mes"), "change_hash", *(["pk"] if tem_pk else [])
+        )
+    else:
+        df = df_tabela.select(F.lit("estatica").alias("mes"), "change_hash", *(["pk"] if tem_pk else []))
+
+    nulo_hash = F.when(F.col("change_hash").isNull(), 1).otherwise(0)
+    if tem_pk:
+        por_pk = df.groupBy("mes", "pk").agg(F.count(F.lit(1)).alias("n"), F.sum(nulo_hash).alias("nh"))
+        pk_vazia = F.col("pk").isNull() | (F.trim(F.col("pk")) == "")
+        agregado = por_pk.groupBy("mes").agg(
+            F.sum("n").alias("linhas"),
+            F.sum("nh").alias("nulos_hash"),
+            F.sum(F.when(pk_vazia, F.col("n")).otherwise(0)).alias("nulos_pk"),
+            F.sum(F.when(F.col("n") > 1, 1).otherwise(0)).alias("pks_repetidas"),
+        )
+    else:
+        # Tabelas sem PK (ex.: ceps) não têm a coluna pk.
+        agregado = df.groupBy("mes").agg(F.count(F.lit(1)).alias("linhas"), F.sum(nulo_hash).alias("nulos_hash"))
+
+    metricas = {}
+    for linha in agregado.collect():
+        valores = linha.asDict()
+        metricas[valores.pop("mes")] = {"nulos_pk": 0, "pks_repetidas": 0, **valores}
+    return metricas
+
+
 def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_ini: Optional[str] = None, mes_fim: Optional[str] = None):
+    """DQ da bronze em uma passada por tabela (P3 de docs/specs/features/2026-11-16-otimizacao-bronze.md).
+
+    As asserções, a ordem em que são avaliadas (mês a mês; dentro do mês: volumetria, registro no log, change_hash
+    nulo, PK nula/vazia) e as mensagens são as mesmas da versão com laço por mês; só muda quantas vezes a tabela
+    é lida: uma agregação para todos os meses em vez de duas leituras por mês.
+    """
     nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
     # Tabelas estáticas não têm a coluna mes_referencia: validam a tabela inteira uma vez.
     meses = gerar_range_meses(mes_ini, mes_fim) if config.is_snapshot_mensal else [None]
     print(f"🧪 Executando Data Quality: {nome_completo_tabela} | Meses: {meses}")
+    rotulos = meses if config.is_snapshot_mensal else ["estatica"]
 
     df_tabela = spark.read.table(nome_completo_tabela)
     colunas_tecnicas = set(DESCRICAO_COLUNAS_METADADOS.keys()) | {"source_reference", "ingested_at", "landing_ingested_at"}
     colunas_raw = [c for c in df_tabela.columns if c not in colunas_tecnicas]
 
-    for mes_referencia in meses:
-        if mes_referencia is None:
-            df_mes = df_tabela
-            mes_referencia = "estatica"
-        else:
-            df_mes = df_tabela.filter(F.col("mes_referencia") == mes_referencia)
+    # 1. Validação de Schema local da config (garante suporte a novas tabelas) e do módulo data_quality.
+    # Só metadados, iguais para todos os meses: antes repetida por mês, falhava já no 1º; checada uma vez.
+    if config.colunas_esperadas:
+        faltantes = set(config.colunas_esperadas) - set(colunas_raw)
+        if faltantes:
+            raise ValueError(f"❌ Colunas ausentes em {nome_completo_tabela} ({rotulos[0]}): {faltantes}")
 
-        # 1. Validação de Schema local da config (garante suporte a novas tabelas) e do módulo data_quality
-        if config.colunas_esperadas:
-            faltantes = set(config.colunas_esperadas) - set(colunas_raw)
-            if faltantes:
-                raise ValueError(f"❌ Colunas ausentes em {nome_completo_tabela} ({mes_referencia}): {faltantes}")
+    validar_schema(df_tabela.select(*colunas_raw), config.nome_tabela_uc)
 
-        validar_schema(df_mes.select(*colunas_raw), config.nome_tabela_uc)
+    # Uma leitura da tabela e uma do log de volumetria para todos os meses.
+    metricas = _metricas_dq_por_mes(df_tabela, config, meses)
+    historico = ler_historico_volumetria(spark, config.nome_tabela_uc)
+    vazio = {"linhas": 0, "nulos_hash": 0, "nulos_pk": 0, "pks_repetidas": 0}
 
-        # 2. Validação de Volumetria
-        validar_volumetria(spark, df_mes, config.nome_tabela_uc, mes_referencia, threshold_queda=config.limite_queda_volumetria)
+    for mes_referencia in rotulos:
+        res = metricas.get(mes_referencia, vazio)
+
+        # 2. Validação de Volumetria. Em ordem: o mês aprovado entra no histórico (e no log) antes do seguinte,
+        # como quando cada mês consultava o log depois do INSERT do anterior.
+        media_historica = media_volumetria_anterior(historico, mes_referencia)
+        checar_volumetria(res["linhas"], media_historica, config.nome_tabela_uc, mes_referencia,
+                          threshold_queda=config.limite_queda_volumetria)
+        registrar_volumetria(spark, config.nome_tabela_uc, mes_referencia, res["linhas"])
+        historico[mes_referencia] = res["linhas"]
 
         # 3. Validação de Hash e PK não nulos
-        # Utilizando agregação única para evitar múltiplos counts
-        # Tabelas sem PK (ex.: ceps) não têm a coluna pk.
-        tem_pk = "pk" in df_mes.columns
-        nulos_pk_expr = (
-            F.sum(F.when(F.col("pk").isNull() | (F.trim(F.col("pk")) == ""), 1).otherwise(0))
-            if tem_pk else F.lit(0)
-        )
-        res = df_mes.select(
-            F.sum(F.when(F.col("change_hash").isNull(), 1).otherwise(0)).alias("nulos_hash"),
-            nulos_pk_expr.alias("nulos_pk"),
-        ).collect()[0]
-
         if res["nulos_hash"] > 0:
             raise ValueError(f"❌ {res['nulos_hash']} registos com change_hash nulo em {nome_completo_tabela} ({mes_referencia})!")
 
@@ -350,12 +395,10 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
                 raise ValueError(f"❌ {res['nulos_pk']} registos com PK nula/vazia em {nome_completo_tabela} ({mes_referencia})!")
 
         # 4. Aviso (não falha): PKs repetidas com conteúdo divergente, mantidas na bronze (B16).
-        # Antes contado na ingestão; aqui lê só a coluna pk da tabela gravada (P1, B17).
-        if tem_pk:
-            qtd = df_mes.select("pk").groupBy("pk").count().filter("count > 1").count()
-            if qtd:
-                print(f"  ⚠️ {qtd} PK(s) repetidas com conteúdo divergente em {nome_completo_tabela} "
-                      f"({mes_referencia}) (mantidas; a Silver desempata).")
+        # Antes contado na ingestão (P1, B17); aqui sai da mesma agregação, lendo a pk da tabela gravada.
+        if res["pks_repetidas"]:
+            print(f"  ⚠️ {res['pks_repetidas']} PK(s) repetidas com conteúdo divergente em {nome_completo_tabela} "
+                  f"({mes_referencia}) (mantidas; a Silver desempata).")
 
     print(f"✅ Data Quality aprovado com sucesso: {nome_completo_tabela}\n")
 
