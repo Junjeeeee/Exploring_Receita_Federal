@@ -55,18 +55,10 @@ USING DELTA
 PARTITIONED BY (mes_referencia)
 COMMENT 'Camada Gold: empresa × mês (matriz canônica) com estoque de ativas e fluxos derivados só da linha do tempo da dim_empresa. Guarda apenas linhas ativas no início/fim do mês, aberturas e mudanças de situação.';
 
--- D-17/D-17b mudaram regras de colunas sem mudar o schema: CREATE TABLE IF NOT EXISTS não atualiza comentário de
--- tabela que já existe, então os comentários dessas colunas são reescritos aqui (idempotente).
-ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_baixa_mes
-    COMMENT 'Está BAIXADA em M e: existia em M−1 sem estar BAIXADA, ou é a primeira aparição pós-baseline (abertura e baixa no mesmo mês, D-17).';
-ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_inaptidao_mes
-    COMMENT 'Está INAPTA em M e: existia em M−1 sem estar INAPTA, ou é a primeira aparição pós-baseline (D-17).';
-ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN teve_suspensao_mes
-    COMMENT 'Está SUSPENSA em M e: existia em M−1 sem estar SUSPENSA, ou é a primeira aparição pós-baseline (D-17).';
-ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN porte_empresa
-    COMMENT 'Porte analítico (MEI, ME, EPP, DEMAIS, NAO IDENTIFICADO...). Do mês anterior quando saiu_estoque_mes (B23); MEI na baixa de primeira aparição quando as datas do Simples mostram MEI na data da baixa (D-17b); senão do mês.';
-ALTER TABLE tcc_receita.gold.fato_empresa_mes ALTER COLUMN opcao_pelo_mei
-    COMMENT 'Optante pelo MEI; do mês anterior quando saiu_estoque_mes (B23); TRUE na baixa de primeira aparição com MEI na data da baixa (D-17b). NULL = sem informação (não é FALSE).';
+-- Os comentários de coluna vêm só do CREATE acima. Os cinco ALTER COLUMN ... COMMENT que reescreviam os textos
+-- das regras D-17/D-17b a cada execução saíram (fase 3, T-F1b): a tabela real já recebeu esses textos em
+-- 2026-11-14, e cada ALTER era um commit Delta a mais por execução. Se um texto mudar de novo, aplicar o ALTER
+-- uma vez, num script de migração.
 
 -- Parâmetros obrigatórios: o REPLACE WHERE abaixo precisa da janela explícita. Parâmetro vazio NÃO vira
 -- "mês anterior" (isso faria o Job rodar verde sobre outro mês): falha aqui, antes de gravar qualquer coisa.
