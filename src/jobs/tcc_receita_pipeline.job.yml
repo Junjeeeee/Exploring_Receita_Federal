@@ -556,11 +556,7 @@ resources:
         - task_key: sf_dim_tempo
         - task_key: sf_dq_dim_empresa
         - task_key: sf_dq_dim_mucanca_estado
-        - task_key: si_dq_dados_simples
-        - task_key: si_dq_empresas
-        - task_key: si_dq_estabelecimentos
         - task_key: si_dq_log_eventos_negocio
-        - task_key: si_dq_socios
       - task_key: gold_fato_indicadores_macro_mes
         job_cluster_key: cluster_pipeline
         spark_python_task:

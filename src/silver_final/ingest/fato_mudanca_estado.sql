@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.fato_mudanca_estado (
     sk_grupo_cnae_anterior BIGINT COMMENT 'FK do grupo CNAE associado à versão empresarial anterior; -1 se ausente.',
     sk_grupo_cnae_posterior BIGINT COMMENT 'FK do grupo CNAE associado à versão empresarial posterior; -1 se ausente.',
     sk_tempo BIGINT COMMENT 'FK para dim_tempo pelo mês do evento.',
-    cnpj_raiz STRING COMMENT 'CNPJ raiz associado ao evento, resolvido por JOIN com Silver Intermediate.',
+    cnpj_raiz STRING COMMENT 'CNPJ raiz associado ao evento: cnpj_basico gravado no log a partir da linha da SCD2 de origem.',
     mes_referencia STRING COMMENT 'Mês do evento (YYYY-MM); partição da fato.',
     data_carga_etl TIMESTAMP COMMENT 'Timestamp de processamento na Silver Final.',
     entidade_tipo STRING COMMENT 'Granularidade da entidade que originou o evento.',
@@ -31,23 +31,8 @@ WITH params AS (
         CAST('{{mes_referencia_inicial}}' AS STRING) AS mes_ini,
         CAST('{{mes_referencia_final}}' AS STRING) AS mes_fim
 ),
-mapeamento_pk AS (
-    SELECT DISTINCT 'EMPRESA' AS entidade_tipo, pk, cnpj_basico
-    FROM tcc_receita.silver_intermediate.empresas
-    WHERE pk IS NOT NULL AND cnpj_basico IS NOT NULL
-    UNION
-    SELECT DISTINCT 'TRIBUTARIO', pk, cnpj_basico
-    FROM tcc_receita.silver_intermediate.dados_simples
-    WHERE pk IS NOT NULL AND cnpj_basico IS NOT NULL
-    UNION
-    SELECT DISTINCT 'ESTABELECIMENTO', pk, cnpj_basico
-    FROM tcc_receita.silver_intermediate.estabelecimentos
-    WHERE pk IS NOT NULL AND cnpj_basico IS NOT NULL
-    UNION
-    SELECT DISTINCT 'SOCIO', pk, cnpj_basico
-    FROM tcc_receita.silver_intermediate.socios
-    WHERE pk IS NOT NULL AND cnpj_basico IS NOT NULL
-),
+-- O cnpj_basico vem do próprio log (gravado a partir da linha da SCD2 de origem, fase 3 / U1). Antes, era
+-- descoberto relendo as quatro SCD2 inteiras e deduplicando (pk -> cnpj_basico) — o mesmo valor, mais caro.
 logs_base AS (
     SELECT DISTINCT
         l.pk AS pk_entidade_origem,
@@ -60,14 +45,20 @@ logs_base AS (
         l.data_evento,
         l.eh_matriz,
         l.mes_referencia,
-        m.cnpj_basico AS cnpj_raiz
+        l.cnpj_basico AS cnpj_raiz
     FROM tcc_receita.silver_intermediate.log_eventos_negocio l
     CROSS JOIN params p
-    LEFT JOIN mapeamento_pk m
-        ON m.entidade_tipo = UPPER(TRIM(l.entidade_tipo))
-       AND m.pk = l.pk
     WHERE l.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
       AND l.pk IS NOT NULL
+),
+-- Só as versões da dim_empresa dos CNPJs que têm evento na janela: um evento só casa versões do próprio CNPJ,
+-- então restringir a dimensão antes dos joins não muda o resultado (e evita ler a dimensão inteira três vezes).
+dim_janela AS (
+    SELECT d.cnpj_raiz, d.sk_empresa, d.sk_grupo_cnae, d.inicio_vigencia, d.fim_vigencia
+    FROM tcc_receita.silver_final.dim_empresa d
+    LEFT SEMI JOIN logs_base l
+        ON l.cnpj_raiz = d.cnpj_raiz
+    WHERE d.sk_empresa <> -1
 ),
 logs_com_dimensoes AS (
     SELECT
@@ -91,8 +82,7 @@ primeira_versao_empresa AS (
         SELECT
             cnpj_raiz, sk_empresa, sk_grupo_cnae,
             ROW_NUMBER() OVER (PARTITION BY cnpj_raiz ORDER BY inicio_vigencia ASC) AS rn
-        FROM tcc_receita.silver_final.dim_empresa
-        WHERE sk_empresa <> -1
+        FROM dim_janela
     ) x
     WHERE rn = 1
 ),
@@ -114,16 +104,14 @@ versoes_pareadas AS (
         END AS sk_grupo_cnae_anterior,
         COALESCE(d_after.sk_grupo_cnae, primeira.sk_grupo_cnae, CAST(-1 AS BIGINT)) AS sk_grupo_cnae_posterior
     FROM logs_com_dimensoes l
-    LEFT JOIN tcc_receita.silver_final.dim_empresa d_after
+    LEFT JOIN dim_janela d_after
         ON l.cnpj_raiz = d_after.cnpj_raiz
        AND l.mes_referencia >= d_after.inicio_vigencia
        AND l.mes_referencia < COALESCE(d_after.fim_vigencia, '9999-12')
-       AND d_after.sk_empresa <> -1
-    LEFT JOIN tcc_receita.silver_final.dim_empresa d_before
+    LEFT JOIN dim_janela d_before
         ON l.cnpj_raiz = d_before.cnpj_raiz
        AND d_before.inicio_vigencia < l.mes_referencia
        AND (d_before.fim_vigencia IS NULL OR d_before.fim_vigencia >= l.mes_referencia)
-       AND d_before.sk_empresa <> -1
     LEFT JOIN primeira_versao_empresa primeira
         ON l.cnpj_raiz = primeira.cnpj_raiz
 ),
