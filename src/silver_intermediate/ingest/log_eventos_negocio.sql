@@ -14,13 +14,23 @@
 -- Baseline: o menor valid_since de cada tabela SCD2 é a carga inicial (2023-05). Nele tudo aparece pela
 -- primeira vez, então nenhuma "primeira aparição" vira evento ali (e não há versão anterior para transição).
 --
--- Como as transições são detectadas: UMA passada por tabela SCD2 com LAG(...) OVER (PARTITION BY pk
--- ORDER BY valid_since), que traz os atributos da versão anterior, e ROW_NUMBER, que diz se a versão é a
+-- Como as transições são detectadas: por tabela SCD2, LAG(...) OVER (PARTITION BY pk ORDER BY valid_since)
+-- traz os atributos da versão anterior; "não tem anterior" (LAG de valid_since nulo) diz que a versão é a
 -- primeira da pk. SUPOSIÇÃO: as versões de uma pk são contíguas (valid_until da anterior = valid_since da
--- seguinte). Isso vale por construção nas SCD2 deste projeto (valid_until = LEAD(valid_since)), então a
--- "versão anterior pelo LAG" equivale ao antigo self-join antigo.valid_until = novo.valid_since.
--- O filtro da janela é aplicado DEPOIS do LAG (em CTEs separadas), para que a versão anterior, que pode
--- estar fora da janela, seja enxergada.
+-- seguinte). Vale por construção nas SCD2 deste projeto (valid_until = LEAD(valid_since)) e é verificada pelo
+-- DQ de contiguidade de cada SCD2.
+--
+-- Desempenho (spec 2026-11-16-otimizacao-log-fato-dashboard.md, §3.1): o LAG NÃO roda sobre o histórico
+-- inteiro. Antes dele, cada SCD2 é reduzida a:
+--   (a) versões que começam na janela, depois do baseline (são as que podem gerar evento), e
+--   (b) versões que TERMINAM na janela (valid_until dentro dela) — a anterior de uma versão (a) termina
+--       exatamente onde ela começa, então está aqui.
+-- Sobre esse conjunto, o LAG de cada versão (a) devolve a mesma anterior que devolveria na tabela inteira;
+-- e se o LAG não acha anterior, a versão é mesmo a primeira da pk (se houvesse anterior, ela terminaria na
+-- janela e estaria no conjunto). Versões que começam no baseline nunca geram evento, por isso ficam de fora.
+--
+-- cnpj_basico: cada evento grava o cnpj_basico da PRÓPRIA linha da SCD2 de origem (não é extraído da pk).
+-- O fato_mudanca_estado usa essa coluna em vez de reler as quatro SCD2 para descobrir o CNPJ.
 
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_intermediate;
 
@@ -45,8 +55,9 @@ WITH params AS (
     SELECT
         CAST('{{mes_referencia_inicial}}' AS STRING) AS mes_ini,
         CAST('{{mes_referencia_final}}' AS STRING) AS mes_fim,
-        -- Baseline (carga inicial) de cada SCD2 = o menor valid_since da própria tabela.
+        -- Baseline (carga inicial) de cada SCD2 = o menor valid_since da própria tabela (leitura de uma coluna).
         (SELECT MIN(valid_since) FROM tcc_receita.silver_intermediate.estabelecimentos) AS baseline_est,
+        (SELECT MIN(valid_since) FROM tcc_receita.silver_intermediate.empresas) AS baseline_emp,
         (SELECT MIN(valid_since) FROM tcc_receita.silver_intermediate.dados_simples) AS baseline_simples,
         (SELECT MIN(valid_since) FROM tcc_receita.silver_intermediate.socios) AS baseline_socios
 ),
@@ -60,26 +71,32 @@ dom_motivos AS (
 ),
 
 -- =====================================================================================================
--- ESTABELECIMENTOS: uma passada com os atributos da versão anterior.
+-- ESTABELECIMENTOS: atributos da versão anterior, só para as versões que interessam à janela.
 -- =====================================================================================================
 est_versoes AS (
     SELECT
-        pk,
-        identificador_matriz_filial,
-        situacao_cadastral_desc,
-        motivo_situacao_cadastral,
-        data_situacao_cadastral,
-        cnae_fiscal_principal,
-        cnae_fiscal_secundaria,
-        valid_since,
-        ROW_NUMBER() OVER (PARTITION BY pk ORDER BY valid_since) AS ordem_versao,
-        LAG(situacao_cadastral_desc)   OVER (PARTITION BY pk ORDER BY valid_since) AS ant_situacao_desc,
-        LAG(motivo_situacao_cadastral) OVER (PARTITION BY pk ORDER BY valid_since) AS ant_motivo,
-        LAG(cnae_fiscal_principal)     OVER (PARTITION BY pk ORDER BY valid_since) AS ant_cnae_principal,
-        LAG(cnae_fiscal_secundaria)    OVER (PARTITION BY pk ORDER BY valid_since) AS ant_cnae_secundaria
-    FROM tcc_receita.silver_intermediate.estabelecimentos
+        e.pk,
+        e.cnpj_basico,
+        e.identificador_matriz_filial,
+        e.situacao_cadastral_desc,
+        e.motivo_situacao_cadastral,
+        e.data_situacao_cadastral,
+        e.cnae_fiscal_principal,
+        e.cnae_fiscal_secundaria,
+        e.valid_since,
+        LAG(e.valid_since) OVER w IS NULL     AS eh_primeira_versao,
+        LAG(e.situacao_cadastral_desc)   OVER w AS ant_situacao_desc,
+        LAG(e.motivo_situacao_cadastral) OVER w AS ant_motivo,
+        LAG(e.cnae_fiscal_principal)     OVER w AS ant_cnae_principal,
+        LAG(e.cnae_fiscal_secundaria)    OVER w AS ant_cnae_secundaria
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    CROSS JOIN params p
+    -- Filtro ANTES do LAG (ver cabeçalho): (a) começa na janela depois do baseline OU (b) termina na janela.
+    WHERE (e.valid_since BETWEEN p.mes_ini AND p.mes_fim AND e.valid_since > p.baseline_est)
+       OR  e.valid_until BETWEEN p.mes_ini AND p.mes_fim
+    WINDOW w AS (PARTITION BY e.pk ORDER BY e.valid_since)
 ),
--- Só as versões que começam na janela (filtro depois do LAG).
+-- Só as versões novas (a); as que só terminam na janela (b) serviram apenas de "versão anterior" no LAG.
 -- eh_matriz (nos eventos abaixo): identificador '1' = matriz; qualquer outro valor, inclusive NULL, conta
 -- como não-matriz (FALSE), porque só matriz confirmada entra nos indicadores de empresa.
 est_janela AS (
@@ -87,6 +104,7 @@ est_janela AS (
     FROM est_versoes v
     CROSS JOIN params p
     WHERE v.valid_since BETWEEN p.mes_ini AND p.mes_fim
+      AND v.valid_since > p.baseline_est
 ),
 -- 1a. Mudança de situação cadastral OU de motivo entre duas versões consecutivas.
 --     valor_antigo/valor_novo = só a descrição da situação; o motivo vai em codigo_motivo.
@@ -106,7 +124,7 @@ ev_estado_cadastral AS (
     FROM est_janela e
     LEFT JOIN dom_motivos m
         ON e.motivo_situacao_cadastral = m.cod_motivo
-    WHERE e.ordem_versao > 1
+    WHERE NOT e.eh_primeira_versao
       AND (
              e.ant_situacao_desc IS DISTINCT FROM e.situacao_cadastral_desc
           OR e.ant_motivo IS DISTINCT FROM e.motivo_situacao_cadastral
@@ -129,7 +147,7 @@ ev_estado_cadastral_primeira AS (
     FROM est_janela e
     LEFT JOIN dom_motivos m
         ON e.motivo_situacao_cadastral = m.cod_motivo
-    WHERE e.ordem_versao = 1
+    WHERE e.eh_primeira_versao
       AND e.valid_since > e.baseline_est
       AND e.situacao_cadastral_desc IS NOT NULL
       AND e.situacao_cadastral_desc <> 'ATIVA'
@@ -148,7 +166,7 @@ ev_cnae_principal AS (
         CAST(NULL AS STRING) AS codigo_motivo,
         COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
     FROM est_janela e
-    WHERE e.ordem_versao > 1
+    WHERE NOT e.eh_primeira_versao
       AND e.ant_cnae_principal IS DISTINCT FROM e.cnae_fiscal_principal
 ),
 -- 3. Mudança na lista de CNAEs secundários (valor_novo pode ser NULL: a lista foi esvaziada, B18).
@@ -165,7 +183,7 @@ ev_cnae_secundario AS (
         CAST(NULL AS STRING) AS codigo_motivo,
         COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
     FROM est_janela e
-    WHERE e.ordem_versao > 1
+    WHERE NOT e.eh_primeira_versao
       AND e.ant_cnae_secundaria IS DISTINCT FROM e.cnae_fiscal_secundaria
 ),
 
@@ -236,12 +254,18 @@ ev_empresa_nasceu AS (
 -- =====================================================================================================
 emp_versoes AS (
     SELECT
-        pk,
-        natureza_juridica,
-        valid_since,
-        ROW_NUMBER() OVER (PARTITION BY pk ORDER BY valid_since) AS ordem_versao,
-        LAG(natureza_juridica) OVER (PARTITION BY pk ORDER BY valid_since) AS ant_natureza_juridica
-    FROM tcc_receita.silver_intermediate.empresas
+        e.pk,
+        e.cnpj_basico,
+        e.natureza_juridica,
+        e.valid_since,
+        LAG(e.valid_since)       OVER w IS NULL AS eh_primeira_versao,
+        LAG(e.natureza_juridica) OVER w AS ant_natureza_juridica
+    FROM tcc_receita.silver_intermediate.empresas e
+    CROSS JOIN params p
+    -- Mesmo filtro antes do LAG dos estabelecimentos, com o baseline da própria tabela.
+    WHERE (e.valid_since BETWEEN p.mes_ini AND p.mes_fim AND e.valid_since > p.baseline_emp)
+       OR  e.valid_until BETWEEN p.mes_ini AND p.mes_fim
+    WINDOW w AS (PARTITION BY e.pk ORDER BY e.valid_since)
 ),
 -- 5. Mudança de natureza jurídica entre duas versões consecutivas, detectada na janela.
 ev_natureza_juridica AS (
@@ -259,7 +283,8 @@ ev_natureza_juridica AS (
     FROM emp_versoes e
     CROSS JOIN params p
     WHERE e.valid_since BETWEEN p.mes_ini AND p.mes_fim
-      AND e.ordem_versao > 1
+      AND e.valid_since > p.baseline_emp
+      AND NOT e.eh_primeira_versao
       AND e.ant_natureza_juridica IS DISTINCT FROM e.natureza_juridica
 ),
 
@@ -268,24 +293,32 @@ ev_natureza_juridica AS (
 -- =====================================================================================================
 sim_versoes AS (
     SELECT
-        pk,
-        opcao_pelo_mei_bool,
-        opcao_pelo_simples_bool,
-        data_opcao_mei,
-        data_exclusao_mei,
-        data_opcao_simples,
-        data_exclusao_simples,
-        valid_since,
-        ROW_NUMBER() OVER (PARTITION BY pk ORDER BY valid_since) AS ordem_versao,
-        LAG(opcao_pelo_mei_bool)     OVER (PARTITION BY pk ORDER BY valid_since) AS ant_mei,
-        LAG(opcao_pelo_simples_bool) OVER (PARTITION BY pk ORDER BY valid_since) AS ant_simples
-    FROM tcc_receita.silver_intermediate.dados_simples
+        s.pk,
+        s.cnpj_basico,
+        s.opcao_pelo_mei_bool,
+        s.opcao_pelo_simples_bool,
+        s.data_opcao_mei,
+        s.data_exclusao_mei,
+        s.data_opcao_simples,
+        s.data_exclusao_simples,
+        s.valid_since,
+        LAG(s.valid_since)             OVER w IS NULL AS eh_primeira_versao,
+        LAG(s.opcao_pelo_mei_bool)     OVER w AS ant_mei,
+        LAG(s.opcao_pelo_simples_bool) OVER w AS ant_simples
+    FROM tcc_receita.silver_intermediate.dados_simples s
+    CROSS JOIN params p
+    -- Mesmo filtro antes do LAG dos estabelecimentos, com o baseline da própria tabela.
+    WHERE (s.valid_since BETWEEN p.mes_ini AND p.mes_fim AND s.valid_since > p.baseline_simples)
+       OR  s.valid_until BETWEEN p.mes_ini AND p.mes_fim
+    WINDOW w AS (PARTITION BY s.pk ORDER BY s.valid_since)
 ),
+-- Só as versões novas (a); as demais serviram apenas de "versão anterior" no LAG.
 sim_janela AS (
     SELECT v.*, p.baseline_simples
     FROM sim_versoes v
     CROSS JOIN params p
     WHERE v.valid_since BETWEEN p.mes_ini AND p.mes_fim
+      AND v.valid_since > p.baseline_simples
 ),
 -- 6. Transições de flag (FALSE→TRUE = entrou; TRUE→FALSE = saiu) e primeira aparição pós-baseline
 --    já optante (C-16: NULL → 'true'). data_evento = data de opção (entrada) ou de exclusão (saída).
@@ -302,7 +335,7 @@ ev_tributario AS (
            CAST(NULL AS STRING), CAST(opcao_pelo_mei_bool AS STRING),
            valid_since, data_opcao_mei
     FROM sim_janela
-    WHERE ordem_versao = 1 AND valid_since > baseline_simples AND opcao_pelo_mei_bool = TRUE
+    WHERE eh_primeira_versao AND valid_since > baseline_simples AND opcao_pelo_mei_bool = TRUE
     UNION ALL
     -- Saiu do MEI
     SELECT pk, 'SAIU DO MEI',
@@ -323,7 +356,7 @@ ev_tributario AS (
            CAST(NULL AS STRING), CAST(opcao_pelo_simples_bool AS STRING),
            valid_since, data_opcao_simples
     FROM sim_janela
-    WHERE ordem_versao = 1 AND valid_since > baseline_simples AND opcao_pelo_simples_bool = TRUE
+    WHERE eh_primeira_versao AND valid_since > baseline_simples AND opcao_pelo_simples_bool = TRUE
     UNION ALL
     -- Saiu do Simples
     SELECT pk, 'SAIU DO SIMPLES',
@@ -352,21 +385,29 @@ ev_tributario_final AS (
 -- =====================================================================================================
 soc_versoes AS (
     SELECT
-        pk,
-        vinculo_ativo,
-        qualificacao_socio,
-        data_entrada_sociedade,
-        valid_since,
-        ROW_NUMBER() OVER (PARTITION BY pk ORDER BY valid_since) AS ordem_versao,
-        LAG(vinculo_ativo)      OVER (PARTITION BY pk ORDER BY valid_since) AS ant_vinculo_ativo,
-        LAG(qualificacao_socio) OVER (PARTITION BY pk ORDER BY valid_since) AS ant_qualificacao
-    FROM tcc_receita.silver_intermediate.socios
+        s.pk,
+        s.cnpj_basico,
+        s.vinculo_ativo,
+        s.qualificacao_socio,
+        s.data_entrada_sociedade,
+        s.valid_since,
+        LAG(s.valid_since)        OVER w IS NULL AS eh_primeira_versao,
+        LAG(s.vinculo_ativo)      OVER w AS ant_vinculo_ativo,
+        LAG(s.qualificacao_socio) OVER w AS ant_qualificacao
+    FROM tcc_receita.silver_intermediate.socios s
+    CROSS JOIN params p
+    -- Mesmo filtro antes do LAG dos estabelecimentos, com o baseline da própria tabela.
+    WHERE (s.valid_since BETWEEN p.mes_ini AND p.mes_fim AND s.valid_since > p.baseline_socios)
+       OR  s.valid_until BETWEEN p.mes_ini AND p.mes_fim
+    WINDOW w AS (PARTITION BY s.pk ORDER BY s.valid_since)
 ),
+-- Só as versões novas (a); as demais serviram apenas de "versão anterior" no LAG.
 soc_janela AS (
     SELECT v.*, p.baseline_socios
     FROM soc_versoes v
     CROSS JOIN params p
     WHERE v.valid_since BETWEEN p.mes_ini AND p.mes_fim
+      AND v.valid_since > p.baseline_socios
 ),
 -- 7. Eventos do QSA. Nenhum leva documento ou CNPJ em informacao_adicional.
 ev_socios AS (
@@ -376,7 +417,7 @@ ev_socios AS (
            CAST(NULL AS STRING) AS informacao_adicional,
            valid_since, data_entrada_sociedade AS data_texto
     FROM soc_janela
-    WHERE ordem_versao = 1 AND valid_since > baseline_socios AND vinculo_ativo = TRUE
+    WHERE eh_primeira_versao AND valid_since > baseline_socios AND vinculo_ativo = TRUE
     UNION ALL
     -- Saiu: primeiro snapshot completo em que a relação não aparece. Info = qualificação (como antes).
     SELECT pk, 'SOCIO SAIU DO QSA',
