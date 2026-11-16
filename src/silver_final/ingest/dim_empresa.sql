@@ -262,11 +262,40 @@ fatias AS (
 -- Empresas e Simples com LEFT JOIN: sem cobertura, os atributos ficam NULL (NULL ≠ FALSE).
 -- Se uma SCD2 de origem tiver versões sobrepostas, a fatia duplica; o DQ (colisão de SK) acusa — não se
 -- resolve em silêncio (D-09).
+-- Desempenho (fase 3, §3.4b): os joins POR INTERVALO usam só as chaves de cada fonte (linhas estreitas); as
+-- colunas largas (endereço, contatos, CNAEs, razão social...) entram depois, por join de IGUALDADE em
+-- (pk, valid_since), que é único em cada SCD2. As condições de intervalo são as mesmas de antes, então cada fatia
+-- casa as mesmas versões (e uma sobreposição continua duplicando a fatia e sendo acusada pelo DQ).
+est_chaves AS (SELECT cnpj_basico, pk, valid_since, valid_until FROM est_matriz),
+emp_chaves AS (SELECT cnpj_basico, pk, valid_since, valid_until FROM emp_limpa),
+sim_chaves AS (SELECT cnpj_basico, pk, valid_since, valid_until FROM sim_limpa),
+fatias_com_chaves AS (
+    SELECT
+        f.cnpj_basico,
+        f.inicio_fatia,
+        f.fim_fatia,
+        est.pk AS pk_est, est.valid_since AS vs_est,
+        emp.pk AS pk_emp, emp.valid_since AS vs_emp,
+        sim.pk AS pk_sim, sim.valid_since AS vs_sim
+    FROM fatias f
+    INNER JOIN est_chaves est
+        ON f.cnpj_basico = est.cnpj_basico
+       AND est.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < est.valid_until
+    LEFT JOIN emp_chaves emp
+        ON f.cnpj_basico = emp.cnpj_basico
+       AND emp.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < emp.valid_until
+    LEFT JOIN sim_chaves sim
+        ON f.cnpj_basico = sim.cnpj_basico
+       AND sim.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < sim.valid_until
+),
 unificado_raw AS (
     SELECT
         est.*,
-        f.inicio_fatia AS valid_since_final,
-        f.fim_fatia AS valid_until_final,
+        k.inicio_fatia AS valid_since_final,
+        k.fim_fatia AS valid_until_final,
         (emp.pk IS NOT NULL) AS possui_cadastro_empresa,
         emp.razao_social,
         emp.natureza_juridica,
@@ -278,19 +307,16 @@ unificado_raw AS (
         sim.opcao_pelo_simples_bool,
         CONCAT_WS('|', COALESCE(est.cnae_primario, 'SEM_PRIMARIO'),
                        COALESCE(est.lista_cnaes_secundarios, 'SEM_SECUNDARIO')) AS nk_grupo_cnae_calc
-    FROM fatias f
+    FROM fatias_com_chaves k
     INNER JOIN est_matriz est
-        ON f.cnpj_basico = est.cnpj_basico
-       AND est.valid_since <= f.inicio_fatia
-       AND f.inicio_fatia < est.valid_until
+        ON est.pk = k.pk_est
+       AND est.valid_since = k.vs_est
     LEFT JOIN emp_limpa emp
-        ON f.cnpj_basico = emp.cnpj_basico
-       AND emp.valid_since <= f.inicio_fatia
-       AND f.inicio_fatia < emp.valid_until
+        ON emp.pk = k.pk_emp
+       AND emp.valid_since = k.vs_emp
     LEFT JOIN sim_limpa sim
-        ON f.cnpj_basico = sim.cnpj_basico
-       AND sim.valid_since <= f.inicio_fatia
-       AND f.inicio_fatia < sim.valid_until
+        ON sim.pk = k.pk_sim
+       AND sim.valid_since = k.vs_sim
 ),
 dim_enriquecida AS (
     SELECT
