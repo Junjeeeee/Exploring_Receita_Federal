@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_intermediate.log_eventos_negocio (
     gerado_em TIMESTAMP COMMENT 'Timestamp de processamento do evento.',
     data_evento DATE COMMENT 'Data declarada pela Receita (início de atividade, situação cadastral, opção/exclusão MEI/Simples, entrada do sócio); NULL quando a fonte não tem. Não usar para somar fluxo mensal.',
     codigo_motivo STRING COMMENT 'Código do motivo da situação cadastral da versão nova; só em MUDOU ESTADO CADASTRAL (NULL nos demais).',
-    eh_matriz BOOLEAN COMMENT 'Entidade ESTABELECIMENTO: identificador_matriz_filial = 1 na versão nova. EMPRESA NASCEU: TRUE. Demais (EMPRESA, TRIBUTARIO, SOCIO): NULL, não se aplica.'
+    eh_matriz BOOLEAN COMMENT 'Entidade ESTABELECIMENTO: identificador_matriz_filial = 1 na versão nova. EMPRESA NASCEU: TRUE. Demais (EMPRESA, TRIBUTARIO, SOCIO): NULL, não se aplica.',
+    cnpj_basico STRING COMMENT 'CNPJ raiz (8 dígitos) copiado da coluna cnpj_basico da linha da SCD2 de origem (nunca extraído da pk). Coluna nova (fase 3): tabela antiga sem ela é removida pela migração.'
 )
 USING DELTA
 PARTITIONED BY (mes_referencia)
-COMMENT 'Camada Silver Intermediate: log de transições cadastrais, societárias e tributárias. mes_referencia = mês de detecção; data_evento = data declarada pela Receita. Ordem das colunas: pk, entidade_tipo, evento, valor_antigo, valor_novo, informacao_adicional, mes_referencia, gerado_em, data_evento, codigo_motivo, eh_matriz.';
+COMMENT 'Camada Silver Intermediate: log de transições cadastrais, societárias e tributárias. mes_referencia = mês de detecção; data_evento = data declarada pela Receita. Ordem das colunas: pk, entidade_tipo, evento, valor_antigo, valor_novo, informacao_adicional, mes_referencia, gerado_em, data_evento, codigo_motivo, eh_matriz, cnpj_basico.';
 
 WITH params AS (
     SELECT
@@ -120,7 +121,8 @@ ev_estado_cadastral AS (
         e.valid_since AS mes_referencia,
         CAST(try_to_timestamp(e.data_situacao_cadastral, 'yyyyMMdd') AS DATE) AS data_evento,
         e.motivo_situacao_cadastral AS codigo_motivo,
-        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
+        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz,
+        e.cnpj_basico
     FROM est_janela e
     LEFT JOIN dom_motivos m
         ON e.motivo_situacao_cadastral = m.cod_motivo
@@ -143,7 +145,8 @@ ev_estado_cadastral_primeira AS (
         e.valid_since AS mes_referencia,
         CAST(try_to_timestamp(e.data_situacao_cadastral, 'yyyyMMdd') AS DATE) AS data_evento,
         e.motivo_situacao_cadastral AS codigo_motivo,
-        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
+        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz,
+        e.cnpj_basico
     FROM est_janela e
     LEFT JOIN dom_motivos m
         ON e.motivo_situacao_cadastral = m.cod_motivo
@@ -164,7 +167,8 @@ ev_cnae_principal AS (
         e.valid_since AS mes_referencia,
         CAST(NULL AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
+        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz,
+        e.cnpj_basico
     FROM est_janela e
     WHERE NOT e.eh_primeira_versao
       AND e.ant_cnae_principal IS DISTINCT FROM e.cnae_fiscal_principal
@@ -181,7 +185,8 @@ ev_cnae_secundario AS (
         e.valid_since AS mes_referencia,
         CAST(NULL AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz
+        COALESCE(e.identificador_matriz_filial = '1', FALSE) AS eh_matriz,
+        e.cnpj_basico
     FROM est_janela e
     WHERE NOT e.eh_primeira_versao
       AND e.ant_cnae_secundaria IS DISTINCT FROM e.cnae_fiscal_secundaria
@@ -258,7 +263,8 @@ ev_empresa_nasceu AS (
         mat.valid_since AS mes_referencia,
         CAST(try_to_timestamp(mat.data_inicio_atividade, 'yyyyMMdd') AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        TRUE AS eh_matriz
+        TRUE AS eh_matriz,
+        mat.cnpj_basico
     FROM primeira_versao_matriz mat
     INNER JOIN pk_empresa emp
         ON emp.cnpj_basico = mat.cnpj_basico
@@ -297,7 +303,8 @@ ev_natureza_juridica AS (
         e.valid_since AS mes_referencia,
         CAST(NULL AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        CAST(NULL AS BOOLEAN) AS eh_matriz
+        CAST(NULL AS BOOLEAN) AS eh_matriz,
+        e.cnpj_basico
     FROM emp_versoes e
     CROSS JOIN params p
     WHERE e.valid_since BETWEEN p.mes_ini AND p.mes_fim
@@ -342,42 +349,42 @@ sim_janela AS (
 --    já optante (C-16: NULL → 'true'). data_evento = data de opção (entrada) ou de exclusão (saída).
 ev_tributario AS (
     -- Entrou no MEI (transição)
-    SELECT pk, 'ENTROU NO MEI' AS evento,
+    SELECT pk, cnpj_basico, 'ENTROU NO MEI' AS evento,
            CAST(ant_mei AS STRING) AS valor_antigo, CAST(opcao_pelo_mei_bool AS STRING) AS valor_novo,
            valid_since, data_opcao_mei AS data_texto
     FROM sim_janela
     WHERE ant_mei = FALSE AND opcao_pelo_mei_bool = TRUE
     UNION ALL
     -- Entrou no MEI (primeira aparição pós-baseline já como MEI)
-    SELECT pk, 'ENTROU NO MEI',
+    SELECT pk, cnpj_basico, 'ENTROU NO MEI',
            CAST(NULL AS STRING), CAST(opcao_pelo_mei_bool AS STRING),
            valid_since, data_opcao_mei
     FROM sim_janela
     WHERE eh_primeira_versao AND valid_since > baseline_simples AND opcao_pelo_mei_bool = TRUE
     UNION ALL
     -- Saiu do MEI
-    SELECT pk, 'SAIU DO MEI',
+    SELECT pk, cnpj_basico, 'SAIU DO MEI',
            CAST(ant_mei AS STRING), CAST(opcao_pelo_mei_bool AS STRING),
            valid_since, data_exclusao_mei
     FROM sim_janela
     WHERE ant_mei = TRUE AND opcao_pelo_mei_bool = FALSE
     UNION ALL
     -- Entrou no Simples (transição)
-    SELECT pk, 'ENTROU NO SIMPLES',
+    SELECT pk, cnpj_basico, 'ENTROU NO SIMPLES',
            CAST(ant_simples AS STRING), CAST(opcao_pelo_simples_bool AS STRING),
            valid_since, data_opcao_simples
     FROM sim_janela
     WHERE ant_simples = FALSE AND opcao_pelo_simples_bool = TRUE
     UNION ALL
     -- Entrou no Simples (primeira aparição pós-baseline já optante)
-    SELECT pk, 'ENTROU NO SIMPLES',
+    SELECT pk, cnpj_basico, 'ENTROU NO SIMPLES',
            CAST(NULL AS STRING), CAST(opcao_pelo_simples_bool AS STRING),
            valid_since, data_opcao_simples
     FROM sim_janela
     WHERE eh_primeira_versao AND valid_since > baseline_simples AND opcao_pelo_simples_bool = TRUE
     UNION ALL
     -- Saiu do Simples
-    SELECT pk, 'SAIU DO SIMPLES',
+    SELECT pk, cnpj_basico, 'SAIU DO SIMPLES',
            CAST(ant_simples AS STRING), CAST(opcao_pelo_simples_bool AS STRING),
            valid_since, data_exclusao_simples
     FROM sim_janela
@@ -394,7 +401,8 @@ ev_tributario_final AS (
         valid_since AS mes_referencia,
         CAST(try_to_timestamp(data_texto, 'yyyyMMdd') AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        CAST(NULL AS BOOLEAN) AS eh_matriz
+        CAST(NULL AS BOOLEAN) AS eh_matriz,
+        cnpj_basico
     FROM ev_tributario
 ),
 
@@ -430,7 +438,7 @@ soc_janela AS (
 -- 7. Eventos do QSA. Nenhum leva documento ou CNPJ em informacao_adicional.
 ev_socios AS (
     -- Entrou: primeira versão da relação, com vínculo ativo, depois do baseline (mês de detecção).
-    SELECT pk, 'SOCIO ENTROU NO QSA' AS evento,
+    SELECT pk, cnpj_basico, 'SOCIO ENTROU NO QSA' AS evento,
            CAST(NULL AS STRING) AS valor_antigo, 'ATIVO' AS valor_novo,
            CAST(NULL AS STRING) AS informacao_adicional,
            valid_since, data_entrada_sociedade AS data_texto
@@ -438,7 +446,7 @@ ev_socios AS (
     WHERE eh_primeira_versao AND valid_since > baseline_socios AND vinculo_ativo = TRUE
     UNION ALL
     -- Saiu: primeiro snapshot completo em que a relação não aparece. Info = qualificação (como antes).
-    SELECT pk, 'SOCIO SAIU DO QSA',
+    SELECT pk, cnpj_basico, 'SOCIO SAIU DO QSA',
            'ATIVO', 'INATIVO',
            qualificacao_socio,
            valid_since, CAST(NULL AS STRING)
@@ -446,7 +454,7 @@ ev_socios AS (
     WHERE ant_vinculo_ativo = TRUE AND vinculo_ativo = FALSE
     UNION ALL
     -- Retornou: relação marcada como inativa volta a aparecer.
-    SELECT pk, 'SOCIO RETORNOU AO QSA',
+    SELECT pk, cnpj_basico, 'SOCIO RETORNOU AO QSA',
            'INATIVO', 'ATIVO',
            CAST(NULL AS STRING),
            valid_since, data_entrada_sociedade
@@ -454,7 +462,7 @@ ev_socios AS (
     WHERE ant_vinculo_ativo = FALSE AND vinculo_ativo = TRUE
     UNION ALL
     -- Mudou qualificação: só entre duas versões com vínculo ativo.
-    SELECT pk, 'MUDOU QUALIFICACAO SOCIO',
+    SELECT pk, cnpj_basico, 'MUDOU QUALIFICACAO SOCIO',
            ant_qualificacao, qualificacao_socio,
            CAST(NULL AS STRING),
            valid_since, CAST(NULL AS STRING)
@@ -473,11 +481,12 @@ ev_socios_final AS (
         valid_since AS mes_referencia,
         CAST(try_to_timestamp(data_texto, 'yyyyMMdd') AS DATE) AS data_evento,
         CAST(NULL AS STRING) AS codigo_motivo,
-        CAST(NULL AS BOOLEAN) AS eh_matriz
+        CAST(NULL AS BOOLEAN) AS eh_matriz,
+        cnpj_basico
     FROM ev_socios
 ),
 
--- Todas as CTEs acima têm as mesmas 10 colunas, na mesma ordem.
+-- Todas as CTEs acima têm as mesmas 11 colunas, na mesma ordem (cnpj_basico por último).
 todos_eventos AS (
     SELECT * FROM ev_empresa_nasceu
     UNION ALL SELECT * FROM ev_estado_cadastral
@@ -504,5 +513,6 @@ SELECT
     current_timestamp() AS gerado_em,
     data_evento,
     codigo_motivo,
-    eh_matriz
+    eh_matriz,
+    cnpj_basico
 FROM todos_eventos;

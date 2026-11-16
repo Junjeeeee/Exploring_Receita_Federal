@@ -69,6 +69,38 @@ nascimentos_repetidos AS (
         HAVING COUNT(*) > 1
     ) r
 ),
+-- cnpj_basico preenchido em TODOS os meses do log, não só na janela (fase 3, U1). Se a migração recriou o log
+-- mas a carga completa foi pulada, ou se a tabela antiga sem a coluna sobreviveu, isso aparece aqui.
+-- Leitura de duas colunas da tabela inteira (barata).
+cnpj_nulo AS (
+    SELECT
+        COUNT_IF(cnpj_basico IS NULL) AS eventos_sem_cnpj,
+        COUNT(DISTINCT CASE WHEN cnpj_basico IS NULL THEN mes_referencia END) AS meses_com_cnpj_nulo
+    FROM tcc_receita.silver_intermediate.log_eventos_negocio
+),
+-- Cobertura de meses, independente da janela: todo mês com versões novas de estabelecimentos (depois do
+-- baseline) tem de ter eventos no log, e vice-versa. Pega a migração seguida de uma janela parcial (o log
+-- recriado ficaria só com os meses dessa janela). Lê só a coluna de mês das duas tabelas.
+-- Só até o fim da janela: numa carga em blocos, os meses depois do bloco ainda não foram processados.
+meses_fonte AS (
+    SELECT DISTINCT e.valid_since AS mes
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    CROSS JOIN params p
+    WHERE e.valid_since > p.baseline_est
+      AND e.valid_since <= p.mes_fim
+),
+meses_log AS (
+    SELECT DISTINCT l.mes_referencia AS mes
+    FROM tcc_receita.silver_intermediate.log_eventos_negocio l
+    CROSS JOIN params p
+    WHERE l.mes_referencia <= p.mes_fim
+),
+cobertura AS (
+    SELECT
+        (SELECT COUNT(*) FROM (SELECT mes FROM meses_fonte EXCEPT SELECT mes FROM meses_log)) AS meses_faltando,
+        (SELECT COUNT(*) FROM (SELECT mes FROM meses_log EXCEPT SELECT mes FROM meses_fonte)) AS meses_sobrando,
+        (SELECT MIN(mes) FROM (SELECT mes FROM meses_fonte EXCEPT SELECT mes FROM meses_log)) AS exemplo_faltando
+),
 metricas AS (
     SELECT
         COALESCE(SUM(total), 0) AS total_eventos_janela,
@@ -110,8 +142,17 @@ SELECT
     -- (sinal de erro sistemático, ex.: mes_referencia trocado pela data declarada).
     ASSERT_TRUE(m.nasceu_data_futura * 1000 <= m.total_nasceu,
         CONCAT('ERRO DQ [log_eventos_negocio]: ', m.nasceu_data_futura, ' de ', m.total_nasceu,
-               ' EMPRESA NASCEU com data_evento após o fim do mês de detecção + 31 dias (> 0,1%)!'))
+               ' EMPRESA NASCEU com data_evento após o fim do mês de detecção + 31 dias (> 0,1%)!')),
+    ASSERT_TRUE(c.eventos_sem_cnpj = 0,
+        CONCAT('ERRO DQ [log_eventos_negocio]: ', CAST(c.eventos_sem_cnpj AS STRING), ' eventos sem cnpj_basico em ',
+               CAST(c.meses_com_cnpj_nulo AS STRING), ' mes(es) do historico (carga completa pulada?)')),
+    ASSERT_TRUE(cob.meses_faltando = 0 AND cob.meses_sobrando = 0,
+        CONCAT('ERRO DQ [log_eventos_negocio]: meses do log diferem dos meses com versoes novas de estabelecimentos (',
+               CAST(cob.meses_faltando AS STRING), ' faltando, ex.: ', COALESCE(cob.exemplo_faltando, '?'), '; ',
+               CAST(cob.meses_sobrando AS STRING), ' sobrando). Carga completa pulada?'))
 FROM metricas m
 CROSS JOIN params p
 CROSS JOIN duplicatas d
-CROSS JOIN nascimentos_repetidos r;
+CROSS JOIN nascimentos_repetidos r
+CROSS JOIN cnpj_nulo c
+CROSS JOIN cobertura cob;
