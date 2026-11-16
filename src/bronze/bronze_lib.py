@@ -76,16 +76,43 @@ def configurar_ambiente_unity_catalog(spark: SparkSession):
     spark.sql("CREATE SCHEMA IF NOT EXISTS tcc_receita.bronze")
 
 
-def aplicar_comentarios_uc(spark: SparkSession, config: TabelaBronzeConfig, colunas_existentes: List[str]):
-    nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
-    comentario_tab = config.descricao_tabela.replace("'", "''")
-    spark.sql(f"COMMENT ON TABLE {nome_completo_tabela} IS '{comentario_tab}'")
+def comentarios_pendentes(
+    descricao_colunas: Dict[str, str], comentarios_atuais: Dict[str, Optional[str]]
+) -> Dict[str, str]:
+    """Colunas cujo comentário desejado difere do gravado (só colunas que existem na tabela)."""
+    return {
+        col: comentario
+        for col, comentario in descricao_colunas.items()
+        if col in comentarios_atuais and comentarios_atuais[col] != comentario
+    }
 
+
+def aplicar_comentarios_uc(spark: SparkSession, config: TabelaBronzeConfig):
+    """Aplica os comentários de tabela e de coluna no Unity Catalog só quando diferem do que já está gravado.
+
+    Cada COMMENT ON / ALTER COLUMN ... COMMENT é um commit Delta (+ atualização no UC). Antes, todos eram
+    reaplicados a cada execução, coluna a coluna (B20). A escrita em overwrite sem `overwriteSchema`
+    preserva o schema da tabela, comentários incluídos; então, depois da 1ª execução, nada é reaplicado,
+    e um comentário editado no config é aplicado sozinho na execução seguinte.
+    """
+    nome_completo_tabela = f"tcc_receita.bronze.{config.nome_tabela_uc}"
+
+    comentario_tabela_atual = spark.catalog.getTable(nome_completo_tabela).description
+    if comentario_tabela_atual != config.descricao_tabela:
+        comentario_tab = config.descricao_tabela.replace("'", "''")
+        spark.sql(f"COMMENT ON TABLE {nome_completo_tabela} IS '{comentario_tab}'")
+
+    # Schema efetivamente persistido; o comentário de coluna fica em metadata["comment"] do campo.
+    comentarios_atuais = {
+        campo.name: campo.metadata.get("comment")
+        for campo in spark.read.table(nome_completo_tabela).schema.fields
+    }
     dicionario_completo = {**config.descricao_colunas, **DESCRICAO_COLUNAS_METADADOS}
-    for col in colunas_existentes:
-        if col in dicionario_completo:
-            comentario_col = dicionario_completo[col].replace("'", "''")
-            spark.sql(f"ALTER TABLE {nome_completo_tabela} ALTER COLUMN {col} COMMENT '{comentario_col}'")
+    pendentes = comentarios_pendentes(dicionario_completo, comentarios_atuais)
+    for col, comentario in pendentes.items():
+        comentario_col = comentario.replace("'", "''")
+        spark.sql(f"ALTER TABLE {nome_completo_tabela} ALTER COLUMN {col} COMMENT '{comentario_col}'")
+    print(f"  Comentários de coluna aplicados: {len(pendentes)} (demais já estavam gravados).")
 
 
 def _obter_pasta_landing(config: TabelaBronzeConfig) -> str:
@@ -243,9 +270,7 @@ def ingerir_tabela_bronze(
         colunas_finais = df_bronze.columns
 
     if colunas_finais:
-        # Usa o schema efetivamente persistido, não o último DataFrame em memória.
-        colunas_persistidas = spark.read.table(nome_completo_tabela).columns
-        aplicar_comentarios_uc(spark, config, colunas_persistidas)
+        aplicar_comentarios_uc(spark, config)
     print(f"✅ Ingestão e documentação finalizadas: {nome_completo_tabela}\n")
 
 def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_ini: Optional[str] = None, mes_fim: Optional[str] = None):
