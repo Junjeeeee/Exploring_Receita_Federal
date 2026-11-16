@@ -169,23 +169,84 @@ versoes_janela AS (
       AND e.inicio_vigencia <= p.mes_fim
       AND COALESCE(e.fim_vigencia, '9999-12') > p.mes_anterior_janela
 ),
-versoes_com_anterior AS (
-    -- Para cada versão, a versão imediatamente anterior da mesma empresa (LAG no nível de VERSÃO, não de
-    -- mês: ~1 linha por empresa em vez de uma por empresa×mês). Ela só vale como "mês anterior" se
-    -- terminar exatamente onde esta começa (fim_vigencia_anterior = inicio_vigencia); senão há um buraco.
+-- Dois caminhos (spec 2026-11-16-otimizacao-log-fato-dashboard.md, §3.3). O "mês anterior" de uma versão só
+-- importa no mês em que ela começa: nos meses seguintes, M−1 é coberto pela própria versão. Por isso:
+--   * versões NOVAS (começam na janela, depois do baseline) buscam a versão anterior por join de igualdade
+--     (a anterior termina exatamente onde a nova começa) — caminho pequeno, só o que mudou;
+--   * versões ANTIGAS (começaram antes da janela, ou no baseline) não precisam de anterior: no baseline não
+--     existe M−1, e antes da janela o mês de início não é gerado. Elas são a maioria (~todas as ativas) e não
+--     passam por ordenação nenhuma.
+-- Corte A: versão não ATIVA só gera linha no mês em que começa (nos meses seguintes ela não está ativa nem
+-- muda de situação, e o WHERE final a descartaria). Então versão antiga não ATIVA não gera nada e é tirada já
+-- aqui, antes do desdobramento em meses (ex.: dezenas de milhões de empresas baixadas há anos).
+novas AS (
+    SELECT v.*
+    FROM versoes_janela v
+    CROSS JOIN params p
+    CROSS JOIN limites_dim l
+    WHERE v.inicio_vigencia BETWEEN p.mes_ini AND p.mes_fim
+      AND v.inicio_vigencia > l.mes_baseline
+),
+anteriores AS (
+    -- Candidatas a versão anterior de uma nova: terminam dentro da janela. Só colunas estreitas.
+    SELECT
+        v.cnpj_raiz,
+        v.fim_vigencia,
+        v.situacao_cadastral AS situacao_versao_anterior,
+        v.enquadramento_porte_analitico AS porte_versao_anterior,
+        v.opcao_pelo_mei AS mei_versao_anterior,
+        v.opcao_pelo_simples AS simples_versao_anterior
+    FROM versoes_janela v
+    CROSS JOIN params p
+    WHERE v.fim_vigencia BETWEEN p.mes_ini AND p.mes_fim
+),
+novas_com_anterior AS (
+    -- Versão anterior contígua (fim = início da nova). Sem ela (buraco, ou primeira versão), as colunas ficam
+    -- NULL e a empresa "não existia em M−1". Versões da dim não se sobrepõem (DQ de SK), então casa no máximo uma.
+    -- Corte C (D-17b): a marca de "era MEI na baixa" entra aqui, no nível de versão, ANTES do desdobramento em
+    -- meses; só vale para a primeira versão da empresa (mesma condição do join de antes).
+    SELECT
+        n.*,
+        a.fim_vigencia AS fim_vigencia_anterior,
+        a.situacao_versao_anterior,
+        a.porte_versao_anterior,
+        a.mei_versao_anterior,
+        a.simples_versao_anterior,
+        (pa.cnpj_raiz IS NOT NULL) AS eh_primeira_versao,
+        (pa.cnpj_raiz IS NOT NULL AND mb.cnpj_raiz IS NOT NULL) AS eh_mei_na_baixa
+    FROM novas n
+    LEFT JOIN anteriores a
+        ON a.cnpj_raiz = n.cnpj_raiz
+       AND a.fim_vigencia = n.inicio_vigencia
+    LEFT JOIN primeira_aparicao pa
+        ON pa.cnpj_raiz = n.cnpj_raiz
+       AND pa.mes_primeira_aparicao = n.inicio_vigencia
+    LEFT JOIN mei_na_baixa mb
+        ON mb.cnpj_raiz = n.cnpj_raiz
+),
+antigas AS (
+    -- Começaram antes da janela ou no baseline: as colunas de "anterior" nunca são usadas (ficam NULL), não
+    -- são abertura e não são MEI na baixa. Corte A: só as ATIVA geram linha.
     SELECT
         v.*,
-        (pa.cnpj_raiz IS NOT NULL) AS eh_primeira_versao,
-        LAG(v.fim_vigencia) OVER w AS fim_vigencia_anterior,
-        LAG(v.situacao_cadastral) OVER w AS situacao_versao_anterior,
-        LAG(v.enquadramento_porte_analitico) OVER w AS porte_versao_anterior,
-        LAG(v.opcao_pelo_mei) OVER w AS mei_versao_anterior,
-        LAG(v.opcao_pelo_simples) OVER w AS simples_versao_anterior
+        CAST(NULL AS STRING) AS fim_vigencia_anterior,
+        CAST(NULL AS STRING) AS situacao_versao_anterior,
+        CAST(NULL AS STRING) AS porte_versao_anterior,
+        CAST(NULL AS BOOLEAN) AS mei_versao_anterior,
+        CAST(NULL AS BOOLEAN) AS simples_versao_anterior,
+        FALSE AS eh_primeira_versao,
+        FALSE AS eh_mei_na_baixa
     FROM versoes_janela v
-    LEFT JOIN primeira_aparicao pa
-        ON pa.cnpj_raiz = v.cnpj_raiz
-       AND pa.mes_primeira_aparicao = v.inicio_vigencia
-    WINDOW w AS (PARTITION BY v.cnpj_raiz ORDER BY v.inicio_vigencia)
+    CROSS JOIN params p
+    CROSS JOIN limites_dim l
+    WHERE (v.inicio_vigencia < p.mes_ini OR v.inicio_vigencia = l.mes_baseline)
+      AND v.situacao_cadastral = 'ATIVA'
+),
+versoes_com_anterior AS (
+    -- Mesmas colunas, na mesma ordem, nos dois caminhos.
+    SELECT * FROM novas_com_anterior
+    UNION ALL
+    SELECT * FROM antigas
 ),
 ponte_primaria AS (
     -- CNAE principal de cada grupo de CNAEs (um por grupo).
@@ -198,10 +259,8 @@ ponte_primaria AS (
     WHERE rn = 1
 ),
 versoes_a_expandir AS (
-    -- Versão que começou antes da janela e não está ATIVA (ex.: baixada há anos) não gera linha: em todos
-    -- os meses da janela ela não está no estoque e não muda de situação. Descartá-la ANTES de expandir
-    -- em meses evita multiplicar ~30 milhões de empresas mortas pelo número de meses.
     -- Intervalo de meses a gerar: [início da versão, fim exclusivo) ∩ [mes_ini, mes_fim] ∩ (até o último snapshot).
+    -- Versão não ATIVA (só chega aqui se for nova, Corte A): um mês só, o de início.
     SELECT /*+ BROADCAST(cnae) */
         v.*,
         COALESCE(cnae.codigo_cnae, '0000000') AS codigo_cnae,
@@ -210,14 +269,16 @@ versoes_a_expandir AS (
         COALESCE(cnae.nome_divisao, 'NAO ESPECIFICADO') AS divisao_cnae,
         COALESCE(cnae.grande_setor_economico, 'OUTROS / NAO ESPECIFICADO') AS grande_area_cnae,
         GREATEST(v.data_inicio_vigencia, p.data_ini) AS data_primeiro_mes,
-        LEAST(COALESCE(ADD_MONTHS(v.data_fim_vigencia, -1), p.data_fim), p.data_fim, l.data_ultimo_mes_dim) AS data_ultimo_mes
+        CASE
+            WHEN v.situacao_cadastral = 'ATIVA'
+            THEN LEAST(COALESCE(ADD_MONTHS(v.data_fim_vigencia, -1), p.data_fim), p.data_fim, l.data_ultimo_mes_dim)
+            ELSE v.data_inicio_vigencia
+        END AS data_ultimo_mes
     FROM versoes_com_anterior v
     CROSS JOIN params p
     CROSS JOIN limites_dim l
     LEFT JOIN ponte_primaria b ON v.sk_grupo_cnae = b.sk_grupo_cnae
     LEFT JOIN tcc_receita.silver_final.dim_cnae cnae ON COALESCE(b.sk_cnae, -1) = cnae.sk_cnae
-    WHERE v.situacao_cadastral = 'ATIVA'
-       OR v.inicio_vigencia >= p.mes_ini
 ),
 meses_empresa AS (
     -- Uma linha por empresa × mês coberto pela versão (EXPLODE de uma sequência curta, sem join de intervalo).
@@ -303,17 +364,17 @@ SELECT
     -- B23: ao sair do estoque (ex.: MEI baixado vira "ME" na Receita) vale o atributo de M−1. Saída só
     -- acontece no mês de início de uma versão, então M−1 = a versão anterior (LAG). Na primeira aparição já
     -- BAIXADA (D-17) não há M−1: vale 'MEI' se as datas do Simples mostram que era MEI na data da baixa
-    -- (mei_na_baixa, D-17b); senão, o porte da própria versão.
+    -- (eh_mei_na_baixa, D-17b, marcado na versão); senão, o porte da própria versão.
     COALESCE(NULLIF(
         CASE
             WHEN f.saiu_estoque_mes THEN f.porte_versao_anterior
-            WHEN mb.cnpj_raiz IS NOT NULL THEN 'MEI'
+            WHEN f.eh_mei_na_baixa AND f.teve_abertura_mes AND f.teve_baixa_mes THEN 'MEI'
             ELSE f.enquadramento_porte_analitico
         END,
         'NAO APLICAVEL'), 'NAO IDENTIFICADO') AS porte_empresa,
     CASE
         WHEN f.saiu_estoque_mes THEN f.mei_versao_anterior
-        WHEN mb.cnpj_raiz IS NOT NULL THEN TRUE
+        WHEN f.eh_mei_na_baixa AND f.teve_abertura_mes AND f.teve_baixa_mes THEN TRUE
         ELSE f.opcao_pelo_mei
     END AS opcao_pelo_mei,
     CASE WHEN f.saiu_estoque_mes THEN f.simples_versao_anterior ELSE f.opcao_pelo_simples END AS opcao_pelo_simples,
@@ -353,10 +414,6 @@ SELECT
         ELSE '10+ anos'
     END AS faixa_idade_baixa
 FROM idade_baixa f
-LEFT JOIN mei_na_baixa mb
-    ON mb.cnpj_raiz = f.cnpj_raiz
-   AND f.teve_abertura_mes
-   AND f.teve_baixa_mes
 -- Filtro DEPOIS das flags: empresas fora do estoque e sem mudança (ex.: baixadas há anos) não geram linha.
 WHERE f.ativa_inicio_mes
    OR f.ativa_fim_mes
