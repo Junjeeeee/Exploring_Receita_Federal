@@ -1,7 +1,22 @@
 -- Silver Intermediate: histórico SCD2 de estabelecimentos.
--- Parâmetros vazios assumem o mês anterior. A reconstrução preserva passado/futuro.
--- Diferentemente da versão anterior, uma correção no hash atualiza TODOS os atributos de negócio.
+-- Parâmetros vazios assumem o mês anterior; mes_referencia_final vazio = o inicial.
+-- Uma correção no hash substitui a versão inteira (todos os atributos de negócio vêm da bronze nova).
+--
+-- Como funciona (SCD2 em duas fases; spec docs/specs/features/2026-11-16-otimizacao-scd2.md):
+--   Fase 1 (detectar): lê só (pk, mês, carimbo, change_hash) da bronze da janela e das versões da silver que
+--     a janela pode alterar, aplica a regra de sempre (abre versão quando o hash muda em relação à anterior)
+--     e grava uma tabela pequena de AÇÕES: INSERE (versão nova), AJUSTA_FIM (mudar o fim de uma versão
+--     existente) e APAGA (versão que deixou de existir; só em reprocessamento).
+--   Fase 2 (gravar): um único MERGE, atômico, aplica as ações. Os atributos e a limpeza (datas, flags) só
+--     são buscados na bronze para as linhas que abrem versão (~1-2% por mês, fora a carga inicial).
+-- Reexecutar a mesma janela gera zero ações (idempotente). Uma falha em qualquer instrução deixa o destino
+-- como estava: só o MERGE escreve nele, e ele é uma transação. Para retomar, basta rodar de novo.
+--
+-- Instruções: 0 DDL | 1 validação | 2 ações (fase 1) | 3 meses densos | 4 guarda de memória | 5 MERGE | 6 limpeza
 
+-- ---------------------------------------------------------------------------------------------------------
+-- 0. Tabela de destino (DDL inalterado).
+-- ---------------------------------------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_intermediate;
 
 CREATE TABLE IF NOT EXISTS tcc_receita.silver_intermediate.estabelecimentos (
@@ -50,200 +65,348 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_intermediate.estabelecimentos (
 USING DELTA
 COMMENT 'Camada Silver Intermediate (SCD2): Histórico de mutações cadastrais de matrizes e filiais (Estabelecimentos).';
 
-MERGE INTO tcc_receita.silver_intermediate.estabelecimentos AS target
+-- ---------------------------------------------------------------------------------------------------------
+-- 1. Validação, antes de qualquer escrita: janela no formato YYYY-MM, início <= fim, e TODOS os meses da
+--    janela presentes na bronze. Um mês faltando é quase sempre erro de ingestão; seguir em frente apagaria
+--    as versões existentes daquele mês (decisão D5 da spec).
+--    Agregação sem GROUP BY: devolve sempre uma linha, então as asserções sempre rodam (mesmo com bronze vazia).
+--    try_to_timestamp devolve NULL (em vez de erro) para mês inválido, com ANSI ligado ou desligado.
+-- ---------------------------------------------------------------------------------------------------------
+WITH params AS (
+    SELECT
+        COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')) AS mes_ini,
+        COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim
+),
+meses_bronze AS (
+    SELECT COUNT(DISTINCT b.mes_referencia) AS qtd_meses
+    FROM tcc_receita.bronze.estabelecimentos b
+    CROSS JOIN params p
+    WHERE b.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
+)
+SELECT
+    ASSERT_TRUE(
+        p.mes_ini RLIKE '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        AND p.mes_fim RLIKE '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        AND p.mes_ini <= p.mes_fim,
+        'Janela inválida: informe mes_ini e mes_fim no formato YYYY-MM e mes_ini <= mes_fim.'
+    ) AS janela_valida,
+    ASSERT_TRUE(
+        c.qtd_meses = CAST(months_between(CAST(try_to_timestamp(p.mes_fim, 'yyyy-MM') AS DATE),
+                                          CAST(try_to_timestamp(p.mes_ini, 'yyyy-MM') AS DATE)) AS INT) + 1,
+        CONCAT('Bronze estabelecimentos sem todos os meses da janela ', p.mes_ini, '..', p.mes_fim,
+               ': meses encontrados = ', CAST(c.qtd_meses AS STRING), '. Nada foi gravado.')
+    ) AS meses_completos
+FROM params p
+CROSS JOIN meses_bronze c;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- 2. Fase 1 — detecção. Resultado: uma linha por ação, só com chaves, vigência e hash (tabela estreita).
+-- ---------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE TABLE tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos AS
+WITH params AS (
+    SELECT
+        COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')) AS mes_ini,
+        COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim
+),
+-- (a) Bronze da janela: só chave, mês, carimbo e hash (4 colunas em vez da linha inteira).
+bronze_estreita AS (
+    SELECT b.pk, b.mes_referencia AS mes, 'B' AS origem,
+           b.bronze_processed_at AS ts, b.change_hash AS h,
+           CAST(NULL AS STRING) AS valid_until_atual
+    FROM tcc_receita.bronze.estabelecimentos b
+    CROSS JOIN params p
+    WHERE b.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
+      AND b.pk IS NOT NULL
+),
+-- (b) Versões existentes que a janela pode alterar: abertas, ou que terminam em mes_ini ou depois.
+--     Uma versão com valid_until < mes_ini tem sucessora antes da janela, então nada nela muda.
+--     S_DENTRO = começa dentro da janela (é o "antes" a comparar com a bronze nova);
+--     S_FORA   = começa antes ou depois da janela (é um ponto fixo da linha do tempo, como o
+--                "historico_intacto" da versão anterior deste arquivo).
+silver_estreita AS (
+    SELECT s.pk, s.valid_since AS mes,
+           CASE WHEN s.valid_since BETWEEN p.mes_ini AND p.mes_fim THEN 'S_DENTRO' ELSE 'S_FORA' END AS origem,
+           CAST(NULL AS TIMESTAMP) AS ts, s.change_hash AS h,
+           s.valid_until AS valid_until_atual
+    FROM tcc_receita.silver_intermediate.estabelecimentos s
+    CROSS JOIN params p
+    WHERE s.valid_until IS NULL OR s.valid_until >= p.mes_ini
+),
+-- (c) A ÚNICA troca de dados (shuffle) da fase 1: todas as linhas de uma pk vão para a mesma tarefa.
+--     Daqui em diante, as janelas (LAG/LEAD/ROW_NUMBER) particionam por pk e só ordenam localmente.
+uniao AS (
+    SELECT * FROM (
+        SELECT * FROM bronze_estreita
+        UNION ALL
+        SELECT * FROM silver_estreita
+    ) u
+    DISTRIBUTE BY pk
+),
+-- (d) PK repetida no mesmo mês da bronze (B16): fica uma linha por (pk, mês), com o mesmo desempate da
+--     versão anterior (carimbo mais recente; depois o maior hash). Versões da silver passam direto.
+dedup AS (
+    SELECT * FROM (
+        SELECT u.*,
+               ROW_NUMBER() OVER (PARTITION BY pk, mes, origem
+                                  ORDER BY ts DESC NULLS LAST, h DESC) AS rn
+        FROM uniao u
+    ) x
+    WHERE origem <> 'B' OR rn = 1
+),
+-- (e) Linha do tempo nova. Candidatas = versões fora da janela (S_FORA) + bronze da janela (B).
+--     Uma candidata abre versão quando o hash difere do da candidata anterior (a 1ª sempre abre).
+--     PARTITION BY pk, <é candidata>: o LAG ignora as linhas S_DENTRO sem precisar de nova troca de dados.
+com_anterior AS (
+    SELECT d.*,
+           origem IN ('S_FORA', 'B') AS eh_candidata,
+           LAG(h) OVER (PARTITION BY pk, origem IN ('S_FORA', 'B') ORDER BY mes) AS h_anterior
+    FROM dedup d
+),
+com_abertura AS (
+    SELECT c.*, (eh_candidata AND h_anterior IS DISTINCT FROM h) AS abre_versao
+    FROM com_anterior c
+),
+-- valid_until = mês em que abre a próxima versão (exclusivo); NULL = versão atual.
+com_vigencia AS (
+    SELECT a.*,
+           LEAD(mes) OVER (PARTITION BY pk, abre_versao ORDER BY mes) AS valid_until_novo
+    FROM com_abertura a
+),
+-- (f) Pareamento no mesmo (pk, mês): versão existente dentro da janela (S_DENTRO) × versão nova (B que abre).
+--     '9999-12' é só um marcador: distingue "versão nova aberta" (fim NULL) de "não há versão nova".
+pareada AS (
+    SELECT v.*,
+        MAX(CASE WHEN origem = 'S_DENTRO' THEN h END) OVER (PARTITION BY pk, mes) AS h_existente,
+        MAX(CASE WHEN origem = 'B' AND abre_versao THEN h END) OVER (PARTITION BY pk, mes) AS h_nova,
+        MAX(CASE WHEN origem = 'B' AND abre_versao THEN COALESCE(valid_until_novo, '9999-12') END)
+            OVER (PARTITION BY pk, mes) AS fim_nova
+    FROM com_vigencia v
+),
+-- (g) Tabela de ações (spec §3.4). Linha sem ação = nada muda (é o caso de 98-99% das linhas).
+acoes AS (
+    SELECT pk, mes, origem, h, ts,
+        CASE
+          -- versão fora da janela que ficou redundante (mesmo hash da versão nova anterior a ela)
+          WHEN origem = 'S_FORA'   AND NOT abre_versao                                              THEN 'APAGA'
+          -- versão fora da janela cujo fim mudou (caso típico do mês incremental: fechar a corrente)
+          WHEN origem = 'S_FORA'   AND valid_until_novo IS DISTINCT FROM valid_until_atual           THEN 'AJUSTA_FIM'
+          -- versão dentro da janela sem versão nova igual no mesmo mês (reprocessamento)
+          WHEN origem = 'S_DENTRO' AND (h_nova IS NULL OR h_nova <> h)                               THEN 'APAGA'
+          -- versão dentro da janela que continua, mas com outro fim
+          WHEN origem = 'S_DENTRO' AND NULLIF(fim_nova, '9999-12') IS DISTINCT FROM valid_until_atual THEN 'AJUSTA_FIM'
+          -- versão nova que ainda não existe na tabela (se for substituição, a antiga recebe APAGA acima)
+          WHEN origem = 'B' AND abre_versao AND (h_existente IS NULL OR h_existente <> h)            THEN 'INSERE'
+        END AS acao,
+        CASE WHEN origem = 'S_DENTRO' THEN NULLIF(fim_nova, '9999-12') ELSE valid_until_novo END AS valid_until
+    FROM pareada
+)
+SELECT pk,
+       mes                                 AS valid_since,
+       acao,
+       valid_until,
+       valid_until IS NULL                 AS is_current,
+       CASE WHEN origem <> 'B' THEN h END  AS hash_atual,   -- identifica a versão existente no MERGE
+       mes                                 AS mes_origem,   -- onde buscar os atributos (INSERE)
+       CASE WHEN origem = 'B' THEN h END   AS hash_origem,  -- linha exata da bronze (a vencedora do B16)
+       CASE WHEN origem = 'B' THEN ts END  AS ts_origem
+FROM acoes
+WHERE acao IS NOT NULL;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- 3. Meses densos. Um mês é "denso" quando mais de 20% das linhas da bronze daquele mês abrem versão (1º mês
+--    da carga inicial, ou um mês em que todos os hashes mudaram). Mês denso entra inteiro na busca da
+--    instrução 5; mês esparso entra só pelas chaves da lista difundida (broadcast).
+-- ---------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE TABLE tcc_receita.silver_intermediate.tmp_scd2_meses_estabelecimentos AS
+WITH params AS (
+    SELECT
+        COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')) AS mes_ini,
+        COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim
+),
+bronze_mes AS (
+    SELECT b.mes_referencia AS mes, COUNT(*) AS n_bronze
+    FROM tcc_receita.bronze.estabelecimentos b
+    CROSS JOIN params p
+    WHERE b.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
+    GROUP BY b.mes_referencia
+),
+novas_mes AS (
+    SELECT mes_origem AS mes, COUNT(*) AS n_insere
+    FROM tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos
+    WHERE acao = 'INSERE'
+    GROUP BY mes_origem
+)
+SELECT b.mes, b.n_bronze, COALESCE(n.n_insere, 0) AS n_insere,
+       COALESCE(n.n_insere, 0) > 0.2 * b.n_bronze AS denso
+FROM bronze_mes b
+LEFT JOIN novas_mes n ON b.mes = n.mes;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- 4. Guarda de memória: a lista difundida (chaves dos meses esparsos) precisa caber na memória de cada
+--    máquina. 25 M chaves de 8 bytes ≈ 600 MB. Se passar, a janela é grande demais: rodar em blocos menores.
+--    (O texto da mensagem não pode conter as palavras I-N-S-E-R-T nem M-E-R-G-E: o run_sql.py deixaria de
+--    tratar esta instrução como consulta e a asserção não rodaria.)
+-- ---------------------------------------------------------------------------------------------------------
+SELECT ASSERT_TRUE(
+    COALESCE(SUM(CASE WHEN NOT denso THEN n_insere ELSE 0 END), 0) <= 25000000,
+    CONCAT('Versoes novas em meses esparsos de estabelecimentos: ',
+           CAST(SUM(CASE WHEN NOT denso THEN n_insere ELSE 0 END) AS STRING),
+           ' (limite 25 M para a lista difundida). Rode a janela em blocos menores.')
+) AS lista_cabe_na_memoria
+FROM tcc_receita.silver_intermediate.tmp_scd2_meses_estabelecimentos;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- 5. Fase 2 — um único MERGE (atômico) aplica as três ações.
+--    A fonte une (1) as ações sobre versões existentes (só chave e vigência) com (2) as versões novas, já com
+--    os atributos buscados na bronze e limpos. A condição ON inclui o hash da versão existente (hash_atual):
+--    as linhas INSERE têm hash_atual NULL e por isso nunca casam, nem quando APAGA e INSERE têm a mesma
+--    (pk, valid_since) numa substituição. Cada linha do destino casa com no máximo uma linha da fonte.
+-- ---------------------------------------------------------------------------------------------------------
+MERGE INTO tcc_receita.silver_intermediate.estabelecimentos AS t
 USING (
     WITH params AS (
         SELECT
             COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')) AS mes_ini,
             COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM'))) AS mes_fim
     ),
-    pks_afetadas AS (
-        SELECT DISTINCT b.pk
+    -- Chaves (pk, mês) das versões novas dos meses esparsos, reduzidas a um inteiro de 64 bits.
+    -- Colisão do xxhash64 só deixa passar uma linha a mais, que o join exato abaixo descarta.
+    chaves_esparsas AS (
+        SELECT DISTINCT xxhash64(a.pk, a.mes_origem) AS chave
+        FROM tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos a
+        JOIN tcc_receita.silver_intermediate.tmp_scd2_meses_estabelecimentos mm
+          ON a.mes_origem = mm.mes AND NOT mm.denso
+        WHERE a.acao = 'INSERE'
+    ),
+    -- Um único scan da bronze da janela: mês denso passa inteiro; mês esparso só se a chave estiver na
+    -- lista difundida. Os dois joins são broadcast, então nenhuma linha larga da bronze é embaralhada aqui.
+    bronze_filtrada AS (
+        SELECT /*+ BROADCAST(m), BROADCAST(k) */ b.*
         FROM tcc_receita.bronze.estabelecimentos b
         CROSS JOIN params p
+        JOIN tcc_receita.silver_intermediate.tmp_scd2_meses_estabelecimentos m
+          ON b.mes_referencia = m.mes
+        LEFT JOIN chaves_esparsas k
+          ON xxhash64(b.pk, b.mes_referencia) = k.chave
         WHERE b.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
-          AND b.pk IS NOT NULL
+          AND (m.denso OR k.chave IS NOT NULL)
     ),
-    bronze_raw AS (
-        SELECT b.*,
-               ROW_NUMBER() OVER (
-                   PARTITION BY b.pk, b.mes_referencia
-                   ORDER BY b.bronze_processed_at DESC NULLS LAST, b.change_hash DESC  -- PK repetida na Receita: desempate determinístico (B16)
-               ) AS rn
-        FROM tcc_receita.bronze.estabelecimentos b
-        INNER JOIN pks_afetadas a ON b.pk = a.pk
-        CROSS JOIN params p
-        WHERE b.mes_referencia BETWEEN p.mes_ini AND p.mes_fim
-    ),
-    bronze_limpo AS (
-        SELECT
-            pk,
-            NULLIF(TRIM(cnpj_basico), '') AS cnpj_basico,
-            NULLIF(TRIM(cnpj_ordem), '') AS cnpj_ordem,
-            NULLIF(TRIM(cnpj_dv), '') AS cnpj_dv,
-            NULLIF(TRIM(identificador_matriz_filial), '') AS identificador_matriz_filial,
-            NULLIF(UPPER(TRIM(regexp_replace(nome_fantasia, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS nome_fantasia,
-            NULLIF(TRIM(situacao_cadastral), '') AS situacao_cadastral,
-            CASE
-                WHEN TRIM(situacao_cadastral) IN ('02', '2') THEN 'ATIVA'
-                WHEN TRIM(situacao_cadastral) IN ('04', '4') THEN 'INAPTA'
-                WHEN TRIM(situacao_cadastral) IN ('03', '3') THEN 'SUSPENSA'
-                WHEN TRIM(situacao_cadastral) IN ('08', '8') THEN 'BAIXADA'
-                WHEN TRIM(situacao_cadastral) IN ('01', '1') THEN 'NULA'
-                ELSE NULL
-            END AS situacao_cadastral_desc,
-            CASE WHEN CAST(try_to_timestamp(TRIM(data_situacao_cadastral), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_situacao_cadastral) ELSE NULL END AS data_situacao_cadastral,
-            NULLIF(TRIM(motivo_situacao_cadastral), '') AS motivo_situacao_cadastral,
-            NULLIF(TRIM(nome_cidade_exterior), '') AS nome_cidade_exterior,
-            NULLIF(TRIM(pais), '') AS pais,
-            CASE WHEN CAST(try_to_timestamp(TRIM(data_inicio_atividade), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_inicio_atividade) ELSE NULL END AS data_inicio_atividade,
-            NULLIF(TRIM(cnae_fiscal_principal), '') AS cnae_fiscal_principal,
-            NULLIF(TRIM(cnae_fiscal_secundaria), '') AS cnae_fiscal_secundaria,
-            NULLIF(TRIM(tipo_logradouro), '') AS tipo_logradouro,
-            NULLIF(UPPER(TRIM(regexp_replace(logradouro, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS logradouro,
-            NULLIF(TRIM(numero), '') AS numero,
-            NULLIF(UPPER(TRIM(regexp_replace(complemento, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS complemento,
-            NULLIF(UPPER(TRIM(regexp_replace(bairro, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS bairro,
-            NULLIF(TRIM(cep), '') AS cep,
-            NULLIF(TRIM(uf), '') AS uf,
-            NULLIF(TRIM(municipio), '') AS municipio,
-            NULLIF(TRIM(ddd_1), '') AS ddd_1,
-            NULLIF(TRIM(telefone_1), '') AS telefone_1,
-            CASE
-                WHEN NULLIF(TRIM(ddd_1), '') IS NOT NULL
-                 AND NULLIF(TRIM(telefone_1), '') IS NOT NULL
-                 AND regexp_replace(TRIM(telefone_1), '[^0-9]', '') NOT RLIKE '^0+$'
-                THEN CONCAT('(', TRIM(ddd_1), ') ', TRIM(telefone_1))
-                ELSE NULL
-            END AS telefone_1_formatado,
-            NULLIF(TRIM(ddd_2), '') AS ddd_2,
-            NULLIF(TRIM(telefone_2), '') AS telefone_2,
-            CASE
-                WHEN NULLIF(TRIM(ddd_2), '') IS NOT NULL
-                 AND NULLIF(TRIM(telefone_2), '') IS NOT NULL
-                 AND regexp_replace(TRIM(telefone_2), '[^0-9]', '') NOT RLIKE '^0+$'
-                THEN CONCAT('(', TRIM(ddd_2), ') ', TRIM(telefone_2))
-                ELSE NULL
-            END AS telefone_2_formatado,
-            NULLIF(TRIM(ddd_fax), '') AS ddd_fax,
-            NULLIF(TRIM(fax), '') AS fax,
-            NULLIF(TRIM(correio_eletronico), '') AS correio_eletronico,
-            NULLIF(TRIM(situacao_especial), '') AS situacao_especial,
-            CASE WHEN CAST(try_to_timestamp(TRIM(data_situacao_especial), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(data_situacao_especial) ELSE NULL END AS data_situacao_especial,
-            mes_referencia,
-            bronze_processed_at AS inserted_at,
-            change_hash
-        FROM bronze_raw
-        WHERE rn = 1
-    ),
-    historico_intacto AS (
-        SELECT
-            e.pk, e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv, e.identificador_matriz_filial,
-            e.nome_fantasia, e.situacao_cadastral, e.situacao_cadastral_desc,
-            e.data_situacao_cadastral, e.motivo_situacao_cadastral,
-            e.nome_cidade_exterior, e.pais, e.data_inicio_atividade,
-            e.cnae_fiscal_principal, e.cnae_fiscal_secundaria,
-            e.tipo_logradouro, e.logradouro, e.numero, e.complemento, e.bairro,
-            e.cep, e.uf, e.municipio,
-            e.ddd_1, e.telefone_1, e.telefone_1_formatado,
-            e.ddd_2, e.telefone_2, e.telefone_2_formatado,
-            e.ddd_fax, e.fax, e.correio_eletronico,
-            e.situacao_especial, e.data_situacao_especial,
-            e.valid_since AS mes_referencia, e.inserted_at, e.change_hash
-        FROM tcc_receita.silver_intermediate.estabelecimentos e
-        INNER JOIN pks_afetadas a ON e.pk = a.pk
-        CROSS JOIN params p
-        WHERE e.valid_since < p.mes_ini OR e.valid_since > p.mes_fim
-    ),
-    uniao_historico AS (
-        SELECT * FROM historico_intacto
-        UNION ALL
-        SELECT * FROM bronze_limpo
-    ),
-    deteccao_mudancas AS (
-        SELECT *,
-               LAG(change_hash) OVER (PARTITION BY pk ORDER BY mes_referencia) AS prev_hash
-        FROM uniao_historico
-    ),
-    recalculo_vigencia AS (
-        SELECT
-            pk, cnpj_basico, cnpj_ordem, cnpj_dv, identificador_matriz_filial,
-            nome_fantasia, situacao_cadastral, situacao_cadastral_desc,
-            data_situacao_cadastral, motivo_situacao_cadastral,
-            nome_cidade_exterior, pais, data_inicio_atividade,
-            cnae_fiscal_principal, cnae_fiscal_secundaria,
-            tipo_logradouro, logradouro, numero, complemento, bairro,
-            cep, uf, municipio,
-            ddd_1, telefone_1, telefone_1_formatado,
-            ddd_2, telefone_2, telefone_2_formatado,
-            ddd_fax, fax, correio_eletronico,
-            situacao_especial, data_situacao_especial,
-            mes_referencia, inserted_at, change_hash,
-            mes_referencia AS valid_since,
-            LEAD(mes_referencia) OVER (PARTITION BY pk ORDER BY mes_referencia) AS valid_until,
-            LEAD(mes_referencia) OVER (PARTITION BY pk ORDER BY mes_referencia) IS NULL AS is_current
-        FROM deteccao_mudancas
-        WHERE prev_hash IS NULL OR prev_hash IS DISTINCT FROM change_hash
+    novas AS (
+        SELECT * FROM tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos WHERE acao = 'INSERE'
     )
-    SELECT
-        t.pk AS join_pk,
-        t.valid_since AS join_valid_since,
-        s.*
-    FROM recalculo_vigencia s
-    FULL OUTER JOIN (
-        SELECT e.pk, e.valid_since
-        FROM tcc_receita.silver_intermediate.estabelecimentos e
-        INNER JOIN pks_afetadas a ON e.pk = a.pk
-    ) t
-      ON s.pk = t.pk AND s.valid_since = t.valid_since
-) AS staging
-ON target.pk = staging.join_pk
-AND target.valid_since = staging.join_valid_since
-WHEN MATCHED AND staging.pk IS NULL THEN DELETE
-WHEN MATCHED AND (
-       target.valid_until IS DISTINCT FROM staging.valid_until
-    OR target.is_current IS DISTINCT FROM staging.is_current
-    OR target.change_hash IS DISTINCT FROM staging.change_hash
-) THEN UPDATE SET
-    target.cnpj_basico = staging.cnpj_basico,
-    target.cnpj_ordem = staging.cnpj_ordem,
-    target.cnpj_dv = staging.cnpj_dv,
-    target.identificador_matriz_filial = staging.identificador_matriz_filial,
-    target.nome_fantasia = staging.nome_fantasia,
-    target.situacao_cadastral = staging.situacao_cadastral,
-    target.situacao_cadastral_desc = staging.situacao_cadastral_desc,
-    target.data_situacao_cadastral = staging.data_situacao_cadastral,
-    target.motivo_situacao_cadastral = staging.motivo_situacao_cadastral,
-    target.nome_cidade_exterior = staging.nome_cidade_exterior,
-    target.pais = staging.pais,
-    target.data_inicio_atividade = staging.data_inicio_atividade,
-    target.cnae_fiscal_principal = staging.cnae_fiscal_principal,
-    target.cnae_fiscal_secundaria = staging.cnae_fiscal_secundaria,
-    target.tipo_logradouro = staging.tipo_logradouro,
-    target.logradouro = staging.logradouro,
-    target.numero = staging.numero,
-    target.complemento = staging.complemento,
-    target.bairro = staging.bairro,
-    target.cep = staging.cep,
-    target.uf = staging.uf,
-    target.municipio = staging.municipio,
-    target.ddd_1 = staging.ddd_1,
-    target.telefone_1 = staging.telefone_1,
-    target.telefone_1_formatado = staging.telefone_1_formatado,
-    target.ddd_2 = staging.ddd_2,
-    target.telefone_2 = staging.telefone_2,
-    target.telefone_2_formatado = staging.telefone_2_formatado,
-    target.ddd_fax = staging.ddd_fax,
-    target.fax = staging.fax,
-    target.correio_eletronico = staging.correio_eletronico,
-    target.situacao_especial = staging.situacao_especial,
-    target.data_situacao_especial = staging.data_situacao_especial,
-    target.mes_referencia = staging.mes_referencia,
-    target.change_hash = staging.change_hash,
-    target.valid_until = staging.valid_until,
-    target.is_current = staging.is_current,
-    target.updated_at = current_timestamp()
-WHEN NOT MATCHED THEN INSERT (
+    -- (1) Ações sobre versões existentes: os atributos não importam (o UPDATE só mexe na vigência).
+    SELECT a.pk, a.valid_since, a.acao, a.hash_atual, a.valid_until, a.is_current,
+           CAST(NULL AS STRING)    AS cnpj_basico,
+           CAST(NULL AS STRING)    AS cnpj_ordem,
+           CAST(NULL AS STRING)    AS cnpj_dv,
+           CAST(NULL AS STRING)    AS identificador_matriz_filial,
+           CAST(NULL AS STRING)    AS nome_fantasia,
+           CAST(NULL AS STRING)    AS situacao_cadastral,
+           CAST(NULL AS STRING)    AS situacao_cadastral_desc,
+           CAST(NULL AS STRING)    AS data_situacao_cadastral,
+           CAST(NULL AS STRING)    AS motivo_situacao_cadastral,
+           CAST(NULL AS STRING)    AS nome_cidade_exterior,
+           CAST(NULL AS STRING)    AS pais,
+           CAST(NULL AS STRING)    AS data_inicio_atividade,
+           CAST(NULL AS STRING)    AS cnae_fiscal_principal,
+           CAST(NULL AS STRING)    AS cnae_fiscal_secundaria,
+           CAST(NULL AS STRING)    AS tipo_logradouro,
+           CAST(NULL AS STRING)    AS logradouro,
+           CAST(NULL AS STRING)    AS numero,
+           CAST(NULL AS STRING)    AS complemento,
+           CAST(NULL AS STRING)    AS bairro,
+           CAST(NULL AS STRING)    AS cep,
+           CAST(NULL AS STRING)    AS uf,
+           CAST(NULL AS STRING)    AS municipio,
+           CAST(NULL AS STRING)    AS ddd_1,
+           CAST(NULL AS STRING)    AS telefone_1,
+           CAST(NULL AS STRING)    AS telefone_1_formatado,
+           CAST(NULL AS STRING)    AS ddd_2,
+           CAST(NULL AS STRING)    AS telefone_2,
+           CAST(NULL AS STRING)    AS telefone_2_formatado,
+           CAST(NULL AS STRING)    AS ddd_fax,
+           CAST(NULL AS STRING)    AS fax,
+           CAST(NULL AS STRING)    AS correio_eletronico,
+           CAST(NULL AS STRING)    AS situacao_especial,
+           CAST(NULL AS STRING)    AS data_situacao_especial,
+           CAST(NULL AS TIMESTAMP) AS inserted_at,
+           CAST(NULL AS STRING)    AS change_hash
+    FROM tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos a
+    WHERE a.acao IN ('APAGA', 'AJUSTA_FIM')
+    UNION ALL
+    -- (2) Versões novas: atributos da bronze com a mesma limpeza de sempre.
+    --     O join exato por (pk, mês, hash, carimbo) pega a mesma linha que venceu o desempate da fase 1 e
+    --     descarta os falsos positivos do xxhash64. (pk, mês, change_hash) é única na bronze
+    --     (dropDuplicates na ingestão), então sai uma linha por versão nova; o DQ de unicidade vigia isso.
+    SELECT n.pk, n.valid_since, 'INSERE' AS acao, CAST(NULL AS STRING) AS hash_atual, n.valid_until, n.is_current,
+           NULLIF(TRIM(b.cnpj_basico), '') AS cnpj_basico,
+           NULLIF(TRIM(b.cnpj_ordem), '') AS cnpj_ordem,
+           NULLIF(TRIM(b.cnpj_dv), '') AS cnpj_dv,
+           NULLIF(TRIM(b.identificador_matriz_filial), '') AS identificador_matriz_filial,
+           NULLIF(UPPER(TRIM(regexp_replace(b.nome_fantasia, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS nome_fantasia,
+           NULLIF(TRIM(b.situacao_cadastral), '') AS situacao_cadastral,
+           CASE
+               WHEN TRIM(b.situacao_cadastral) IN ('02', '2') THEN 'ATIVA'
+               WHEN TRIM(b.situacao_cadastral) IN ('04', '4') THEN 'INAPTA'
+               WHEN TRIM(b.situacao_cadastral) IN ('03', '3') THEN 'SUSPENSA'
+               WHEN TRIM(b.situacao_cadastral) IN ('08', '8') THEN 'BAIXADA'
+               WHEN TRIM(b.situacao_cadastral) IN ('01', '1') THEN 'NULA'
+               ELSE NULL
+           END AS situacao_cadastral_desc,
+           CASE WHEN CAST(try_to_timestamp(TRIM(b.data_situacao_cadastral), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(b.data_situacao_cadastral) ELSE NULL END AS data_situacao_cadastral,
+           NULLIF(TRIM(b.motivo_situacao_cadastral), '') AS motivo_situacao_cadastral,
+           NULLIF(TRIM(b.nome_cidade_exterior), '') AS nome_cidade_exterior,
+           NULLIF(TRIM(b.pais), '') AS pais,
+           CASE WHEN CAST(try_to_timestamp(TRIM(b.data_inicio_atividade), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(b.data_inicio_atividade) ELSE NULL END AS data_inicio_atividade,
+           NULLIF(TRIM(b.cnae_fiscal_principal), '') AS cnae_fiscal_principal,
+           NULLIF(TRIM(b.cnae_fiscal_secundaria), '') AS cnae_fiscal_secundaria,
+           NULLIF(TRIM(b.tipo_logradouro), '') AS tipo_logradouro,
+           NULLIF(UPPER(TRIM(regexp_replace(b.logradouro, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS logradouro,
+           NULLIF(TRIM(b.numero), '') AS numero,
+           NULLIF(UPPER(TRIM(regexp_replace(b.complemento, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS complemento,
+           NULLIF(UPPER(TRIM(regexp_replace(b.bairro, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS bairro,
+           NULLIF(TRIM(b.cep), '') AS cep,
+           NULLIF(TRIM(b.uf), '') AS uf,
+           NULLIF(TRIM(b.municipio), '') AS municipio,
+           NULLIF(TRIM(b.ddd_1), '') AS ddd_1,
+           NULLIF(TRIM(b.telefone_1), '') AS telefone_1,
+           CASE
+               WHEN NULLIF(TRIM(b.ddd_1), '') IS NOT NULL
+                AND NULLIF(TRIM(b.telefone_1), '') IS NOT NULL
+                AND regexp_replace(TRIM(b.telefone_1), '[^0-9]', '') NOT RLIKE '^0+$'
+               THEN CONCAT('(', TRIM(b.ddd_1), ') ', TRIM(b.telefone_1))
+               ELSE NULL
+           END AS telefone_1_formatado,
+           NULLIF(TRIM(b.ddd_2), '') AS ddd_2,
+           NULLIF(TRIM(b.telefone_2), '') AS telefone_2,
+           CASE
+               WHEN NULLIF(TRIM(b.ddd_2), '') IS NOT NULL
+                AND NULLIF(TRIM(b.telefone_2), '') IS NOT NULL
+                AND regexp_replace(TRIM(b.telefone_2), '[^0-9]', '') NOT RLIKE '^0+$'
+               THEN CONCAT('(', TRIM(b.ddd_2), ') ', TRIM(b.telefone_2))
+               ELSE NULL
+           END AS telefone_2_formatado,
+           NULLIF(TRIM(b.ddd_fax), '') AS ddd_fax,
+           NULLIF(TRIM(b.fax), '') AS fax,
+           NULLIF(TRIM(b.correio_eletronico), '') AS correio_eletronico,
+           NULLIF(TRIM(b.situacao_especial), '') AS situacao_especial,
+           CASE WHEN CAST(try_to_timestamp(TRIM(b.data_situacao_especial), 'yyyyMMdd') AS DATE) IS NOT NULL THEN TRIM(b.data_situacao_especial) ELSE NULL END AS data_situacao_especial,
+           b.bronze_processed_at AS inserted_at,
+           b.change_hash
+    FROM bronze_filtrada b
+    JOIN novas n
+      ON  b.pk = n.pk
+      AND b.mes_referencia = n.mes_origem
+      AND b.change_hash = n.hash_origem
+      AND b.bronze_processed_at <=> n.ts_origem
+) AS s
+ON t.pk = s.pk AND t.valid_since = s.valid_since AND t.change_hash = s.hash_atual
+WHEN MATCHED AND s.acao = 'APAGA' THEN DELETE
+WHEN MATCHED AND s.acao = 'AJUSTA_FIM' THEN UPDATE SET
+    t.valid_until = s.valid_until,
+    t.is_current  = s.is_current,
+    t.updated_at  = current_timestamp()
+WHEN NOT MATCHED AND s.acao = 'INSERE' THEN INSERT (
     pk, cnpj_basico, cnpj_ordem, cnpj_dv, identificador_matriz_filial,
     nome_fantasia, situacao_cadastral, situacao_cadastral_desc,
     data_situacao_cadastral, motivo_situacao_cadastral,
@@ -258,17 +421,24 @@ WHEN NOT MATCHED THEN INSERT (
     mes_referencia, inserted_at, updated_at, change_hash,
     valid_since, valid_until, is_current
 ) VALUES (
-    staging.pk, staging.cnpj_basico, staging.cnpj_ordem, staging.cnpj_dv, staging.identificador_matriz_filial,
-    staging.nome_fantasia, staging.situacao_cadastral, staging.situacao_cadastral_desc,
-    staging.data_situacao_cadastral, staging.motivo_situacao_cadastral,
-    staging.nome_cidade_exterior, staging.pais, staging.data_inicio_atividade,
-    staging.cnae_fiscal_principal, staging.cnae_fiscal_secundaria,
-    staging.tipo_logradouro, staging.logradouro, staging.numero, staging.complemento, staging.bairro,
-    staging.cep, staging.uf, staging.municipio,
-    staging.ddd_1, staging.telefone_1, staging.telefone_1_formatado,
-    staging.ddd_2, staging.telefone_2, staging.telefone_2_formatado,
-    staging.ddd_fax, staging.fax, staging.correio_eletronico,
-    staging.situacao_especial, staging.data_situacao_especial,
-    staging.mes_referencia, staging.inserted_at, current_timestamp(), staging.change_hash,
-    staging.valid_since, staging.valid_until, staging.is_current
+    s.pk, s.cnpj_basico, s.cnpj_ordem, s.cnpj_dv, s.identificador_matriz_filial,
+    s.nome_fantasia, s.situacao_cadastral, s.situacao_cadastral_desc,
+    s.data_situacao_cadastral, s.motivo_situacao_cadastral,
+    s.nome_cidade_exterior, s.pais, s.data_inicio_atividade,
+    s.cnae_fiscal_principal, s.cnae_fiscal_secundaria,
+    s.tipo_logradouro, s.logradouro, s.numero, s.complemento, s.bairro,
+    s.cep, s.uf, s.municipio,
+    s.ddd_1, s.telefone_1, s.telefone_1_formatado,
+    s.ddd_2, s.telefone_2, s.telefone_2_formatado,
+    s.ddd_fax, s.fax, s.correio_eletronico,
+    s.situacao_especial, s.data_situacao_especial,
+    s.valid_since, s.inserted_at, current_timestamp(), s.change_hash,
+    s.valid_since, s.valid_until, s.is_current
 );
+
+-- ---------------------------------------------------------------------------------------------------------
+-- 6. Limpeza das tabelas de trabalho. Se a execução parar antes daqui, a sobra é inofensiva: a próxima
+--    execução recria as duas tabelas (CREATE OR REPLACE).
+-- ---------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS tcc_receita.silver_intermediate.tmp_scd2_acoes_estabelecimentos;
+DROP TABLE IF EXISTS tcc_receita.silver_intermediate.tmp_scd2_meses_estabelecimentos;
