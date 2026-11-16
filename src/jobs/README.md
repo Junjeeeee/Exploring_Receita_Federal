@@ -40,6 +40,7 @@ decisões: `docs/specs/features/job-databricks.md`.
 | `gold_<t>`, `gold_dq_gold` | fatos, OBT, mercado ativo, coorte, views `ds_*` |
 
 Ao mudar um SQL (nova tabela lida, novo arquivo), rode o gerador e cole o YAML de novo na UI.
+Antes, rode `python scripts/checar_sql_cluster.py`: falha (arquivo:linha) em construções que passam no warehouse mas não no DBR 15.4 do Job (`TRY_TO_DATE`, `ZORDER BY`, `|>`, `BEGIN…END`, `:param` em arquivo do Job); exceção por linha com `-- compat: ok <motivo>`.
 
 Fora do Job: `ds_micro_*.sql` são consultas do dashboard (parâmetros `:param_*`); `migracao_socios.sql`
 (legado) e `vw_dashboard_eventos_cnae.sql` (sem consumidor) não rodam.
