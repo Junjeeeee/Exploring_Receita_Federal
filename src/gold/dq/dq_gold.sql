@@ -381,3 +381,120 @@ FROM ultimo_fato ulf
 CROSS JOIN ultimo_dim uld
 CROSS JOIN ativas_fato af
 CROSS JOIN ativas_mercado am;
+
+-- 5. Tabelas do dashboard (dash_*, fase 3): batem com as fontes e cobrem todos os meses.
+--    (a) Na janela, por mês: linhas de dash_fluxos_mes = aberturas + baixas do fato; baixas em dash_baixas_idade_mes
+--        e em dash_baixas_motivo_mes = baixas do fato; eventos em dash_eventos_mes = linhas da OBT.
+--    (b) Cobertura, do início do histórico até o fim da janela (independente da janela, como o 3b): os meses das
+--        dash_*_mes têm de ser os meses do fato depois do primeiro mês (no primeiro, a carga inicial, não há abertura
+--        nem baixa) e, em dash_eventos_mes, os meses da OBT. Pega a migração seguida de uma janela parcial.
+--    Só colunas de mês e contagens: as dash_* são pequenas e o fato é lido uma vez, na janela.
+WITH params AS (
+    SELECT '{{mes_referencia_inicial}}' AS mes_ini, '{{mes_referencia_final}}' AS mes_fim
+),
+fato_janela AS (
+    SELECT f.mes_referencia, COUNT_IF(f.teve_abertura_mes) + COUNT_IF(f.teve_baixa_mes) AS linhas_fluxo,
+           COUNT_IF(f.teve_baixa_mes) AS baixas
+    FROM tcc_receita.gold.fato_empresa_mes f CROSS JOIN params p
+    WHERE f.mes_referencia >= p.mes_ini AND f.mes_referencia <= p.mes_fim
+    GROUP BY f.mes_referencia
+),
+obt_janela AS (
+    SELECT o.mes_referencia, COUNT(*) AS eventos
+    FROM tcc_receita.gold.obt_dashboard_eventos o CROSS JOIN params p
+    WHERE o.mes_referencia >= p.mes_ini AND o.mes_referencia <= p.mes_fim
+    GROUP BY o.mes_referencia
+),
+dash_fluxos AS (
+    SELECT d.mes_referencia, COUNT(*) AS linhas FROM tcc_receita.gold.dash_fluxos_mes d CROSS JOIN params p
+    WHERE d.mes_referencia >= p.mes_ini AND d.mes_referencia <= p.mes_fim GROUP BY d.mes_referencia
+),
+dash_idade AS (
+    SELECT d.mes_referencia, SUM(d.qtd_baixas) AS baixas FROM tcc_receita.gold.dash_baixas_idade_mes d CROSS JOIN params p
+    WHERE d.mes_referencia >= p.mes_ini AND d.mes_referencia <= p.mes_fim GROUP BY d.mes_referencia
+),
+dash_motivo AS (
+    SELECT d.mes_referencia, SUM(d.qtd_empresas) AS baixas FROM tcc_receita.gold.dash_baixas_motivo_mes d CROSS JOIN params p
+    WHERE d.mes_referencia >= p.mes_ini AND d.mes_referencia <= p.mes_fim GROUP BY d.mes_referencia
+),
+dash_eventos AS (
+    SELECT d.mes_referencia, SUM(d.qtd_eventos) AS eventos FROM tcc_receita.gold.dash_eventos_mes d CROSS JOIN params p
+    WHERE d.mes_referencia >= p.mes_ini AND d.mes_referencia <= p.mes_fim GROUP BY d.mes_referencia
+),
+conferencia AS (
+    -- (a) por mês da janela; mês ausente de um lado conta como 0.
+    SELECT
+        COUNT_IF(COALESCE(f.linhas_fluxo, 0) <> COALESCE(df.linhas, 0)
+              OR COALESCE(f.baixas, 0) <> COALESCE(di.baixas, 0)
+              OR COALESCE(f.baixas, 0) <> COALESCE(dm.baixas, 0)) AS meses_fato_divergentes,
+        MIN(CASE WHEN COALESCE(f.linhas_fluxo, 0) <> COALESCE(df.linhas, 0)
+                   OR COALESCE(f.baixas, 0) <> COALESCE(di.baixas, 0)
+                   OR COALESCE(f.baixas, 0) <> COALESCE(dm.baixas, 0)
+                 THEN CONCAT(f.mes_referencia, ' fato=', CAST(f.linhas_fluxo AS STRING), '/', CAST(f.baixas AS STRING),
+                             ' dash=', CAST(COALESCE(df.linhas, 0) AS STRING), '/', CAST(COALESCE(di.baixas, 0) AS STRING),
+                             '/', CAST(COALESCE(dm.baixas, 0) AS STRING)) END) AS exemplo_fato
+    FROM fato_janela f
+    LEFT JOIN dash_fluxos df ON df.mes_referencia = f.mes_referencia
+    LEFT JOIN dash_idade di ON di.mes_referencia = f.mes_referencia
+    LEFT JOIN dash_motivo dm ON dm.mes_referencia = f.mes_referencia
+),
+conferencia_eventos AS (
+    SELECT COUNT_IF(COALESCE(o.eventos, 0) <> COALESCE(d.eventos, 0)) AS meses_eventos_divergentes
+    FROM obt_janela o
+    FULL OUTER JOIN dash_eventos d ON d.mes_referencia = o.mes_referencia
+),
+-- (b) cobertura de meses até o fim da janela.
+meses_fato AS (
+    SELECT DISTINCT f.mes_referencia FROM tcc_receita.gold.fato_empresa_mes f CROSS JOIN params p
+    WHERE f.mes_referencia <= p.mes_fim
+      AND f.mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)
+),
+meses_obt AS (
+    SELECT DISTINCT o.mes_referencia FROM tcc_receita.gold.obt_dashboard_eventos o CROSS JOIN params p
+    WHERE o.mes_referencia <= p.mes_fim
+),
+meses_dash AS (
+    SELECT 'dash_fluxos_mes' AS tabela, d.mes_referencia FROM tcc_receita.gold.dash_fluxos_mes d
+    UNION SELECT 'dash_baixas_idade_mes', d.mes_referencia FROM tcc_receita.gold.dash_baixas_idade_mes d
+    UNION SELECT 'dash_baixas_motivo_mes', d.mes_referencia FROM tcc_receita.gold.dash_baixas_motivo_mes d
+    UNION SELECT 'dash_eventos_mes', d.mes_referencia FROM tcc_receita.gold.dash_eventos_mes d
+),
+esperado AS (
+    SELECT t.tabela, m.mes_referencia
+    FROM (SELECT 'dash_fluxos_mes' AS tabela UNION ALL SELECT 'dash_baixas_idade_mes'
+          UNION ALL SELECT 'dash_baixas_motivo_mes') t
+    CROSS JOIN meses_fato m
+    UNION ALL
+    SELECT 'dash_eventos_mes', mes_referencia FROM meses_obt
+),
+cobertura AS (
+    SELECT
+        (SELECT COUNT(*) FROM (SELECT * FROM esperado
+                               EXCEPT SELECT d.* FROM meses_dash d CROSS JOIN params p WHERE d.mes_referencia <= p.mes_fim)) AS faltando,
+        (SELECT COUNT(*) FROM (SELECT d.* FROM meses_dash d CROSS JOIN params p WHERE d.mes_referencia <= p.mes_fim
+                               EXCEPT SELECT * FROM esperado)) AS sobrando,
+        (SELECT MIN(CONCAT(tabela, ' ', mes_referencia)) FROM (SELECT * FROM esperado
+                               EXCEPT SELECT d.* FROM meses_dash d CROSS JOIN params p WHERE d.mes_referencia <= p.mes_fim)) AS exemplo
+),
+-- (c) mercado: a soma de dash_mercado é o número de empresas do mercado ativo (mesma fotografia).
+mercado AS (
+    SELECT (SELECT SUM(empresas_ativas) FROM tcc_receita.gold.dash_mercado) AS soma_dash,
+           (SELECT COUNT(*) FROM tcc_receita.gold.dashboard_mercado_ativo) AS qtd_mercado
+)
+SELECT
+    ASSERT_TRUE(c.meses_fato_divergentes = 0,
+        CONCAT('ERRO DQ [dash_fluxos_mes/dash_baixas_*]: contagens diferem do fato_empresa_mes em ',
+               CAST(c.meses_fato_divergentes AS STRING), ' mes(es); ex.: ', COALESCE(c.exemplo_fato, '?'))),
+    ASSERT_TRUE(ce.meses_eventos_divergentes = 0,
+        CONCAT('ERRO DQ [dash_eventos_mes]: soma de eventos difere da OBT em ',
+               CAST(ce.meses_eventos_divergentes AS STRING), ' mes(es) da janela.')),
+    ASSERT_TRUE(cob.faltando = 0 AND cob.sobrando = 0,
+        CONCAT('ERRO DQ [dash_*_mes]: meses diferem dos da fonte (', CAST(cob.faltando AS STRING), ' faltando, ex.: ',
+               COALESCE(cob.exemplo, '?'), '; ', CAST(cob.sobrando AS STRING), ' sobrando). Carga completa da migracao pulada?')),
+    ASSERT_TRUE(COALESCE(m.soma_dash, 0) = m.qtd_mercado,
+        CONCAT('ERRO DQ [dash_mercado]: soma de empresas_ativas = ', CAST(COALESCE(m.soma_dash, 0) AS STRING),
+               ' x ', CAST(m.qtd_mercado AS STRING), ' linhas em dashboard_mercado_ativo.'))
+FROM conferencia c
+CROSS JOIN conferencia_eventos ce
+CROSS JOIN cobertura cob
+CROSS JOIN mercado m;

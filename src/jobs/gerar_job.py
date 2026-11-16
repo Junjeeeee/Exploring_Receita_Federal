@@ -46,6 +46,8 @@ SQL_INGEST = [
     ("gold", "src/gold/fato_empresa_mes.sql"),
     ("gold", "src/gold/ds_visao_macro.sql"),
     ("gold", "src/gold/fato_indicadores_setoriais_mes.sql"),
+    # Tabelas dash_* (formato de cada gráfico do dashboard): leem fato_empresa_mes, OBT e dashboard_mercado_ativo.
+    ("gold", "src/gold/dashboard_agregados.sql"),
 ]
 # DQ SQL: (prefixo, arquivo, tabela validada; None = DQ de várias tabelas, roda após todas que lê).
 SQL_DQ = [

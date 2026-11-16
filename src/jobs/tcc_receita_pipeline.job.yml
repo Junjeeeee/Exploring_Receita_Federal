@@ -667,6 +667,22 @@ resources:
         depends_on:
         - task_key: gold_fato_empresa_mes
         - task_key: gold_fato_indicadores_macro_mes
+      - task_key: gold_dashboard_agregados
+        job_cluster_key: cluster_pipeline
+        spark_python_task:
+          python_file: src/jobs/run_sql.py
+          source: GIT
+          parameters:
+          - --arquivos
+          - src/gold/dashboard_agregados.sql
+          - --mes_referencia_inicial
+          - "{{job.parameters.mes_referencia_inicial}}"
+          - --mes_referencia_final
+          - "{{job.parameters.mes_referencia_final}}"
+        depends_on:
+        - task_key: gold_dashboard_mercado_ativo
+        - task_key: gold_fato_empresa_mes
+        - task_key: gold_obt_dashboard_eventos
       - task_key: si_dq_empresas
         job_cluster_key: cluster_pipeline
         spark_python_task:
@@ -840,6 +856,7 @@ resources:
           - --mes_referencia_final
           - "{{job.parameters.mes_referencia_final}}"
         depends_on:
+        - task_key: gold_dashboard_agregados
         - task_key: gold_dashboard_mercado_ativo
         - task_key: gold_fato_empresa_mes
         - task_key: gold_fato_indicadores_setoriais_mes
