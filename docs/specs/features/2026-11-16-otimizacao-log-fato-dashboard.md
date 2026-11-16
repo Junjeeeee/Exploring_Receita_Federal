@@ -1,7 +1,9 @@
 # Feature: otimização do log de eventos, do fato empresa × mês e do dashboard (fase 3)
 
-**Status:** rascunho revisado (revisão crítica [`2026-11-16-otimizacao-revisao.md`](2026-11-16-otimizacao-revisao.md)
-incorporada; tabela de achados no §10). Falta aprovação do autor para U3, U4 e U7 (§8).
+**Status:** **implementado e validado na amostra** (2026-11-16; resultados no §12) — T-L2..T-L5, T-F1, T-F1b,
+T-F2, T-D1, T-D2, T-B1, T-B2, T-B4 e a tarefa adicional T-B5 (quadro "ponte" da página 1). **Pendente de cluster:**
+T-D0 (EXPLAIN da dim), aceite de desempenho de todas as tarefas (§5.5, T-X2), T-X1 com as SCD2 da F2, T-B3
+(aprovação do autor na prévia). U3, U4 e U7 continuam em aberto (§8).
 **Camadas afetadas:** silver_intermediate (log), silver_final (dim_empresa, fato_mudanca_estado), gold (fato, painel,
 tabelas novas de dashboard), dashboard Lakeview
 **Branch:** `otimizacao_pipeline` (spec guarda-chuva: [`2026-11-16-otimizacao-pipeline.md`](2026-11-16-otimizacao-pipeline.md);
@@ -754,32 +756,32 @@ atômico próprio e linha no backlog.
 
 **Log (silver_intermediate)**
 
-- [ ] **T-L2 — Ideia 1** (filtro antes do `LAG` nas quatro SCD2; `baseline_emp` em `params`). *Aceite:* `EXCEPT ALL` 0/0
+- [x] **T-L2 — Ideia 1** (filtro antes do `LAG` nas quatro SCD2; `baseline_emp` em `params`). *Aceite:* `EXCEPT ALL` 0/0
   nos cenários (a)(b)(c) do §5.2; no `EXPLAIN` do cluster, **uma leitura com janela (`LAG`) por SCD2 com o filtro da
   janela**, além das leituras de uma coluna (`MIN`) e do `hist_matriz`. Depende de T-P0.
 - [ ] **T-L2b — Ideia 2**, só se a medição de T-L2 mostrar os ramos repetidos entre os passos caros. *Aceite:* `EXCEPT
   ALL` 0/0.
-- [ ] **T-L3 — Ideia 3 (nascimento por candidatos).** *Aceite:* `EXCEPT ALL` 0/0 em `EMPRESA NASCEU` e no log inteiro.
-- [ ] **T-L4 — `cnpj_basico` no log (U1).** DDL com a coluna no fim; script de migração com `DROP` (§3.6); DQ
+- [x] **T-L3 — Ideia 3 (nascimento por candidatos).** *Aceite:* `EXCEPT ALL` 0/0 em `EMPRESA NASCEU` e no log inteiro.
+- [x] **T-L4 — `cnpj_basico` no log (U1).** DDL com a coluna no fim; script de migração com `DROP` (§3.6); DQ
   `cnpj_basico` não nulo em todos os meses. *Aceite:* teste 4 do §5.2.
-- [ ] **T-L5 — `fato_mudanca_estado` com `cnpj_basico` do log e dim restrita aos CNPJs da janela (§3.2).** *Aceite:*
+- [x] **T-L5 — `fato_mudanca_estado` com `cnpj_basico` do log e dim restrita aos CNPJs da janela (§3.2).** *Aceite:*
   `EXCEPT ALL` 0/0; `dq_fato_mudanca_estado` passa. Depende de T-L4.
 
 **Dimensão (silver_final)**
 
 - [ ] **T-D0 — `EXPLAIN` da dim atual no cluster** (de onde vem o spill). Se não vier da largura das linhas, rever
   T-D1/T-D2 antes de implementar.
-- [ ] **T-D1 — Matriz canônica estreita (§3.4a).** *Aceite:* `EXCEPT ALL` 0/0 na `dim_empresa`.
-- [ ] **T-D2 — Joins por intervalo só com chaves (§3.4b).** *Aceite:* `EXCEPT ALL` 0/0; `dq_dim_empresa` passa.
+- [x] **T-D1 — Matriz canônica estreita (§3.4a).** *Aceite:* `EXCEPT ALL` 0/0 na `dim_empresa`.
+- [x] **T-D2 — Joins por intervalo só com chaves (§3.4b).** *Aceite:* `EXCEPT ALL` 0/0; `dq_dim_empresa` passa.
 - [ ] **T-D3 — (se U4) `inicio_vigencia_empresa`** e uso nos três leitores. *Aceite:* `EXCEPT ALL` 0/0 nas leitoras;
   coluna = `MIN(inicio_vigencia)` por CNPJ.
 
 **Fato e painel (gold)**
 
-- [ ] **T-F1 — Cortes A+B+C em `fato_empresa_mes`.** *Aceite:* `EXCEPT ALL` 0/0 nos cenários (a)(b)(c); DQ gold passa
+- [x] **T-F1 — Cortes A+B+C em `fato_empresa_mes`.** *Aceite:* `EXCEPT ALL` 0/0 nos cenários (a)(b)(c); DQ gold passa
   (identidade, continuidade, D-17, D-17b, 2b).
-- [ ] **T-F1b — Remover os 5 `ALTER COLUMN ... COMMENT`** (58–69). *Aceite:* `DESCRIBE TABLE` com os mesmos comentários.
-- [ ] **T-F2 — Painel incremental (U5).** `CREATE TABLE IF NOT EXISTS` + `REPLACE WHERE`; migração e carga completa
+- [x] **T-F1b — Remover os 5 `ALTER COLUMN ... COMMENT`** (58–69). *Aceite:* `DESCRIBE TABLE` com os mesmos comentários.
+- [x] **T-F2 — Painel incremental (U5).** `CREATE TABLE IF NOT EXISTS` + `REPLACE WHERE`; migração e carga completa
   (§3.6); DQ de cobertura de meses. *Aceite:* `EXCEPT ALL` 0/0 contra o painel reconstruído do zero; testes 5 e 6 do
   §5.2; DQ 3 e o de cobertura passam.
 - [ ] **T-F3 — (se U3) optimized write por propriedade de tabela** + `OPTIMIZE` ao fim. Só depois do teste de
@@ -787,15 +789,22 @@ atômico próprio e linha no backlog.
 
 **Dashboard**
 
-- [ ] **T-B1 — `src/gold/dashboard_agregados.sql`** com as tabelas do §3.5, registro em `SQL_INGEST`, YAML regenerado
+- [x] **T-B1 — `src/gold/dashboard_agregados.sql`** com as tabelas do §3.5, registro em `SQL_INGEST`, YAML regenerado
   (`python -m src.jobs.gerar_job`), migração/carga completa e DQ de cobertura (§3.6). *Aceite:* tabelas na amostra;
   `dash_fluxos_mes` = SQL atual de `fluxos_empresa` (`EXCEPT ALL` 0/0); somas por mês das demais = somas no fato/OBT;
   `dash_mercado*` = SQL atual (`EXCEPT ALL` 0/0).
-- [ ] **T-B2 — Gerador aponta para as tabelas novas** (`DATASETS`, `COLUNAS`, `validar()`), JSON regenerado. *Aceite:*
+- [x] **T-B2 — Gerador aponta para as tabelas novas** (`DATASETS`, `COLUNAS`, `validar()`), JSON regenerado. *Aceite:*
   `validar()` ok; `comparar_widgets.py` sem diferença em todos os cenários.
 - [ ] **T-B3 — Prévia publicada e conferida pelo autor;** só então republicar o oficial. *Aceite:* autor aprova.
-- [ ] **T-B4 — DQ das `dash_*`** em `dq_gold.sql`: linhas de `dash_fluxos_mes` por mês = aberturas + baixas do fato;
+- [x] **T-B4 — DQ das `dash_*`** em `dq_gold.sql`: linhas de `dash_fluxos_mes` por mês = aberturas + baixas do fato;
   soma de `dash_mercado` = `COUNT(*)` de `dashboard_mercado_ativo`.
+- [x] **T-B5 — (tarefa adicional, pedido do autor via gerente) quadro "ponte" na página 1:** por que o crescimento
+  líquido ≠ aberturas − baixas, no último mês: aberturas − baixas + reativações + baixas de quem já não estava ativa −
+  aberturas que não entraram como ativas − saídas que não são baixa = crescimento líquido. Dataset `ponte_mes` sobre o
+  painel (reage aos filtros de UF, porte e setor da página); sinais calculados no SQL do dataset. DQ 6 em
+  `dq_gold.sql`: a identidade fecha por mês no fato, e as duas igualdades que permitem montá-la a partir do painel
+  (entradas sem abertura = reativações; baixas com saída = baixas de ativas). Feita **depois** da comparação widget a
+  widget, em commit próprio. *Aceite:* `validar()` ok; identidade fecha na amostra; prévia publicada.
 
 **Fechamento**
 
@@ -876,3 +885,109 @@ Nenhum achado que toca esta spec foi rejeitado.
 - 2026-11-16: spec escrita a partir do código; consultas da §5.4 não rodaram (CLI sem autenticação).
 - 2026-11-16: revisão crítica incorporada (§10); simplificações do gerente aplicadas (dim por chaves estreitas,
   `fluxos_empresa` materializado sem `EXPLODE`, U1/U5/U6 decididas). Nenhum código de produção alterado.
+- 2026-11-16: implementação (agente da fase 3, em paralelo à F2). Resultados na amostra no §12.
+
+---
+
+## 12. Implementação: resultados na amostra, desvios e pendências
+
+### 12.1 Ambiente
+
+- Entrada: as SCD2 atuais de `tcc_receita.amostra_silver_intermediate` (não alteradas; contiguidade conferida: 0
+  buracos nas quatro, nenhuma `pk` com dois `cnpj_basico`). A F2 trabalha em `amostra_f2`; T-X1 refaz a rodada com as
+  SCD2 dela.
+- Referência: `tcc_receita.amostra_f3_ref` = `DEEP CLONE` das tabelas da amostra **geradas pelo código anterior**
+  (log, `dim_empresa`, `fato_mudanca_estado`, fato, painel, OBT, mercado ativo, macro) + `ds_<dataset>` = resultado
+  de cada dataset antigo do dashboard. Conferido antes: o código anterior, rodado de novo em `amostra_f3`, reproduz a
+  referência com `EXCEPT ALL` 0/0 em todas as tabelas.
+- Saída do código novo: `tcc_receita.amostra_f3`, pelo runner novo `scripts/amostra/rodar_em_schema.py` (lê bronze e
+  SCD2 da amostra e grava log/silver_final/gold no schema de teste). Motivo: sobrescrever as tabelas `amostra_*` foi
+  bloqueado pelo controle de permissões do ambiente; o schema separado também evita disputa com a F2.
+
+### 12.2 Resultados (`EXCEPT ALL` nos dois sentidos, fora carimbos de tempo)
+
+| Tarefa | Teste | Resultado |
+|---|---|---|
+| T-L2 | log: (c) 05..06 + 07..08, (b) só 07, (a) 05..08 | 0/0 em 57.976 linhas, nos três; DQ do log passa |
+| T-L3 | idem (nascimento por candidatos) | 0/0 nos três |
+| T-L4 | idem, sem a coluna nova; `cnpj_basico` × SCD2 de origem | 0/0; 0 nulos e 0 divergências nos 57.976 eventos (4 entidades) |
+| T-L4 | migração (`DROP`) + só 2023-08 → DQ do log | **falha** como esperado ("2 faltando, ex.: 2023-06"); carga completa e depois só 2023-08 passam e voltam a 0/0 |
+| T-L5 | `fato_mudanca_estado`: (a)(b)(c) + reprocessar só 2023-06 depois da migração do log | 0/0 em 57.976 linhas nos quatro; `dq_fato_mudanca_estado` passa |
+| T-F1 | fato: (a)(b)(c) | 0/0 em 903.438 linhas nos três; `dq_gold` passa em todos |
+| T-F1b | tabela recriada | 33 comentários de coluna iguais aos da referência; 0/0 |
+| T-F2 | painel: (a)(b)(c) | 0/0 em 88.404 linhas; DQ 3 e 3b passam |
+| T-F2 | painel recriado + só 2023-08 → `dq_gold` | **falha** no 3b ("3 faltando, ex.: 2023-05"); carga completa e depois só 2023-08 passam e voltam a 0/0 |
+| T-D1 | `dim_empresa` | 0/0 em 563.421 linhas; `dq_dim_empresa` passa. A amostra **não tem** matriz sobreposta (0 descartadas): a regra foi provada também num caso sintético (9 versões, 2 descartadas, antigo = novo) |
+| T-D2 | `dim_empresa` | 0/0 (logo `nk_empresa` e fatias por CNPJ iguais); `dq_dim_empresa` passa |
+| T-B1 | `dash_fluxos_mes` × SQL antigo de `fluxos_empresa` | 0/0 em 15.603 linhas |
+| T-B1 | `dash_mercado` / `_bairros` / `_empresas` × SQL antigo | 0/0 em 199.225 / 131.575 / 1.000 linhas |
+| T-B1 | eventos, idade, motivo no grão dos widgets | 0/0 (2.669 / 808 / 347 grupos; somas 57.976 / 5.361 / 5.361) |
+| T-B1/T-B4 | `dash_*_mes` recriadas + só 2023-08 → `dq_gold` | **falha** no 5 ("8 faltando"); blocos 05..06 + 07..08, só 07 e 05..08 passam e batem com a referência |
+| T-B2 | `comparar_widgets.py`, páginas 2, 4 e 5 | ver §12.4 |
+| rodada final | `rodar_em_schema.py --etapas si,sf,gold` (log + toda a silver_final e gold, com todos os DQ, inclusive os novos), SCD2 atuais | tudo passa; log, dim, `fato_mudanca_estado`, fato, painel, OBT e mercado ativo 0/0 contra a referência |
+
+### 12.3 Desvios da implementação
+
+1. **Runner próprio e schemas de teste** (§12.1) em vez de sobrescrever `amostra_*` + `__antes`. Mesmo critério de
+   comparação.
+2. **DQ de cobertura limitado a `mes_referencia <= fim da janela`** (log, painel e `dash_*_mes`). Sem isso, numa carga
+   em blocos (fase 4) o primeiro bloco falharia por não ter os meses dos blocos seguintes. Continua pegando o caso da
+   revisão (migração seguida de uma janela parcial): os meses **antes** da janela faltam e o DQ falha (provado acima).
+3. **DQ de cobertura também no log** (a spec pedia só `cnpj_basico` não nulo, que não pega uma janela parcial depois do
+   `DROP`): meses do log = meses com versões novas de `estabelecimentos` depois do baseline, até o fim da janela.
+4. **`dash_fluxos_mes` já grava sem o primeiro mês** (era o `WHERE SEM_CARGA_INICIAL` do dataset); o dataset novo é um
+   `SELECT` das colunas, sem filtro. Mesmas linhas.
+5. **`dash_eventos_mes` e o dataset `eventos`** ficaram só com as colunas que o widget e os filtros usam (tipo, UF,
+   porte, área); saem `categoria_macro_evento`, `entidade_tipo`, `eh_matriz` e `data_referencia`, que nenhum widget
+   usava. Idem `data_referencia` em `baixas_idade` e `baixas_motivo`.
+6. **Painel com schema explícito**: as taxas são `DECIMAL(30,4)` (o tipo que o `CREATE OR REPLACE AS` produzia) com
+   `CAST` explícito no `SELECT`; comentários de coluna escritos no `CREATE` (antes vinham do fato pelo CTAS).
+7. **T-B4 feita junto com T-B1** (mesmo bloco 5 do `dq_gold.sql`), com duas conferências a mais: soma de
+   `dash_baixas_idade_mes` e de `dash_baixas_motivo_mes` = baixas do fato, e soma de `dash_eventos_mes` = linhas da OBT.
+8. **T-D1/T-D2 implementadas antes do T-D0** (instrução do gerente: só se a equivalência na amostra fechasse — fechou).
+   Se o `EXPLAIN`/medição no cluster mostrar que o spill não vem da largura das linhas, reverter os commits
+   `4d5758f` e `6becf59` é seguro (o resultado é o mesmo).
+9. **Sem dica `BROADCAST` em `ponte_primaria`** no fato (§3.3 sugeria "se couber"): a linha de base mediu
+   `dim_grupo_cnae` com 6,96 mi linhas / 0,46 GB e `ponte_cnae` com 55,6 mi / 2,7 GB — não cabe. A dica existente é em
+   `dim_cnae` (≈1,3 mil linhas) e foi mantida.
+10. **`dash_mercado_empresas` mantém o `ORDER BY capital_social DESC LIMIT 1000` do dataset antigo**: com empate de
+    capital na milésima posição, a escolha entre empatados é arbitrária (já era). Na amostra não há empate na borda.
+
+### 12.4 Comparação widget a widget (T-B2)
+
+`scripts/amostra/comparar_widgets.py` (novo): para cada widget, a consulta que o Lakeview faz sobre o dataset
+(`SELECT <campos> FROM (<dataset>) WHERE <filtros> GROUP BY <categorias>`), com o JSON antigo sobre `amostra_f3_ref` e
+o novo sobre `amostra_f3`; contagens/somas exatas, `AVG`/`PERCENTILE` com tolerância 1e-9; e a lista de valores de cada
+dropdown. Cenários do §5.3 (P2: sem filtro, `uf = SP`, `uf IN (RJ, MG)`, área mais frequente, UF + área; P4: os
+mesmos + `porte = MEI` e UF + porte + área; P5: sem filtro, maior UF, + maior município, + maior bairro, + CNAE mais
+frequente, só CNAE), cada filtro aplicado só aos datasets que ele alcança. **Resultado: 126 comparações, 0 com
+diferença** (página 2: 21, das quais 2 de dropdown; página 4: 63 / 15; página 5: 42 / 12). `validar()` ok.
+
+**Prévia** (`01f1e03111521e8fa0a9cf1aa4f96e4e`, nunca o oficial) republicada sobre `tcc_receita.amostra_f3` e lida de
+volta pela API: 6 páginas, 57 widgets, 19 datasets, todos apontando para `amostra_f3`. Falta a conferência visual do
+autor (T-B3).
+
+**T-B5 (quadro "ponte")**: dataset `ponte_mes` com 3.920 linhas na amostra (abaixo de 100 mil: vai para o navegador). A
+identidade fecha em Brasil (4.060 − 1.943 + 391 + 372 − 117 − 23 = 2.740), SP (783) e MEI (1.928); `dq_gold` com o
+bloco 6 passa. Detalhes em `2026-11-14-dashboard-v2-narrativa.md` §2.8.
+
+### 12.5 Riscos registrados (linha de base, gerente)
+
+- **Filtro de bairro (U7):** 89.189 bairros distintos na base real com 4 meses = 89% do limite de 100 mil valores do
+  dropdown. O número cresce pouco com os meses (é a fotografia do último mês), mas pode passar. Não foi possível
+  confirmar barato se o filtro de bairro do Lakeview já fica restrito ao município escolhido (filtros em cascata);
+  fica para a conferência do autor na prévia. Se passar do limite: aceitar (com UF/município escolhidos a lista
+  encolhe) e pôr nota na página (recomendação do §8).
+- Confirmados pela linha de base: 256 CNPJs com mais de uma ordem de matriz (tamanho de `multi_matriz`); 58% das
+  versões da `dim_empresa` na carga inicial são não ATIVA (o que o Corte A deixa de expandir); fluxos ≈ 2% das linhas
+  do fato (tamanho de `dash_fluxos_mes`).
+- `sf_dq_dim_empresa` subiu de 89 s para 198 s entre 11-08 e 11-14: não foi alterado nesta fase.
+
+### 12.6 Pendente de cluster
+
+- T-D0 e o notebook de `EXPLAIN` (§5.4): log (uma leitura com janela por SCD2), dim (origem do spill), fato (se
+  `antigas` passa por `Exchange` no join de CNAE).
+- T-X2: medição da carga 05..08 + um mês incremental (§5.5), inclusive das tarefas de DQ novas (cobertura).
+- Migração real: rodar `src/jobs/migracoes/2026-11-16_fase3.sql` e, em seguida, a carga com a janela inteira das
+  tarefas `si_log_eventos_negocio`, `gold_fato_indicadores_setoriais_mes`, `gold_dashboard_agregados` e DQ.
+- Job no workspace: a tarefa nova `gold_dashboard_agregados` está só no YAML (o Job do Databricks não foi alterado).
