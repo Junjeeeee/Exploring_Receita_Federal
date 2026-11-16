@@ -190,16 +190,16 @@ def _adicionar_pk(df, config: TabelaBronzeConfig):
     return df
 
 
-def _remover_copias_exatas(df, nome_tabela: str):
+def _remover_copias_exatas(df):
     """Remove só cópias idênticas. PKs repetidas com conteúdo divergente (a Receita publica algumas)
     são MANTIDAS: escolher uma versão é regra de negócio e fica na Silver (ROW_NUMBER por pk/mês com
-    desempate por change_hash). Aqui apenas registramos quantas há. Ver backlog B16."""
-    df = df.dropDuplicates()
-    if "pk" in df.columns:
-        qtd = df.groupBy("pk").count().filter("count > 1").count()
-        if qtd:
-            print(f"  ⚠️ {qtd} PK(s) repetidas com conteúdo divergente em {nome_tabela} (mantidas; a Silver desempata).")
-    return df
+    desempate por change_hash). Ver backlog B16.
+
+    A contagem dessas PKs repetidas (só um aviso) fica na DQ (`testar_tabela_bronze`), lendo só a coluna
+    `pk` da tabela já gravada. Aqui ela era uma ação Spark a mais por mês que, sem cache, refazia leitura +
+    hash + dropDuplicates só para imprimir o aviso (B17; P1 de docs/specs/features/2026-11-16-otimizacao-bronze.md).
+    """
+    return df.dropDuplicates()
 
 
 def ingerir_tabela_bronze(
@@ -250,7 +250,7 @@ def ingerir_tabela_bronze(
         )
         df_transformado = df_transformado.withColumn("change_hash", F.sha2(payload_hash, 256))
         df_transformado = _adicionar_pk(df_transformado, config)
-        df_transformado = _remover_copias_exatas(df_transformado, nome_completo_tabela)
+        df_transformado = _remover_copias_exatas(df_transformado)
 
         if mes_referencia is not None:
             df_bronze = df_transformado.withColumn("mes_referencia", F.lit(mes_referencia))
@@ -320,6 +320,14 @@ def testar_tabela_bronze(spark: SparkSession, config: TabelaBronzeConfig, mes_in
         if config.chaves_primarias or config.pk_custom_expr is not None:
             if res["nulos_pk"] > 0:
                 raise ValueError(f"❌ {res['nulos_pk']} registos com PK nula/vazia em {nome_completo_tabela} ({mes_referencia})!")
+
+        # 4. Aviso (não falha): PKs repetidas com conteúdo divergente, mantidas na bronze (B16).
+        # Antes contado na ingestão; aqui lê só a coluna pk da tabela gravada (P1, B17).
+        if tem_pk:
+            qtd = df_mes.select("pk").groupBy("pk").count().filter("count > 1").count()
+            if qtd:
+                print(f"  ⚠️ {qtd} PK(s) repetidas com conteúdo divergente em {nome_completo_tabela} "
+                      f"({mes_referencia}) (mantidas; a Silver desempata).")
 
     print(f"✅ Data Quality aprovado com sucesso: {nome_completo_tabela}\n")
 
