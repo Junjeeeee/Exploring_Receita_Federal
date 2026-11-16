@@ -100,8 +100,8 @@ files = [
 
 [package.dependencies]
 cffi = [
-    {version = ">=1.0.1", markers = "python_version < \"3.14\""},
     {version = ">=2", markers = "python_version >= \"3.14\""},
+    {version = ">=1.0.1", markers = "python_version < \"3.14\""},
 ]
 
 [[package]]
@@ -1240,12 +1240,12 @@ files = [
 google-auth = ">=2.14.1,<3.0.0"
 googleapis-common-protos = ">=1.69.2,<2.0.0"
 grpcio = [
-    {version = ">=1.59.0,<2.0.0", optional = true, markers = "extra == \"grpc\""},
     {version = ">=1.75.1,<2.0.0", optional = true, markers = "python_version >= \"3.14\" and extra == \"grpc\""},
+    {version = ">=1.59.0,<2.0.0", optional = true, markers = "extra == \"grpc\""},
 ]
 grpcio-status = [
-    {version = ">=1.59.0,<2.0.0", optional = true, markers = "extra == \"grpc\""},
     {version = ">=1.75.1,<2.0.0", optional = true, markers = "python_version >= \"3.14\" and extra == \"grpc\""},
+    {version = ">=1.59.0,<2.0.0", optional = true, markers = "extra == \"grpc\""},
 ]
 opentelemetry-api = ">=1.44.0,<2.0.0"
 proto-plus = ">=1.26.1,<2.0.0"
@@ -1291,8 +1291,8 @@ files = [
 
 [package.dependencies]
 cryptography = [
-    {version = ">=38.0.3", markers = "python_version < \"3.14\""},
     {version = ">=41.0.5", markers = "python_version >= \"3.14\""},
+    {version = ">=38.0.3", markers = "python_version < \"3.14\""},
 ]
 pyasn1-modules = ">=0.2.1"
 
@@ -1393,8 +1393,8 @@ google-api-core = {version = ">=2.28.0,<3.0.0", extras = ["grpc"]}
 google-auth = ">=2.14.1,<2.24.0 || >2.24.0,<2.25.0 || >2.25.0,<3.0.0"
 grpc-google-iam-v1 = ">=0.14.2,<1.0.0"
 grpcio = [
-    {version = ">=1.59.0,<2.0.0"},
     {version = ">=1.75.1,<2.0.0", markers = "python_version >= \"3.14\""},
+    {version = ">=1.59.0,<2.0.0", markers = "python_version < \"3.14\""},
 ]
 proto-plus = ">=1.26.1,<2.0.0"
 protobuf = ">=6.33.5,<8.0.0"
@@ -1415,8 +1415,8 @@ files = [
 google-api-core = {version = ">=2.28.0,<3.0.0", extras = ["grpc"]}
 google-auth = ">=2.14.1,<2.24.0 || >2.24.0,<2.25.0 || >2.25.0,<3.0.0"
 grpcio = [
-    {version = ">=1.59.0,<2.0.0"},
     {version = ">=1.75.1,<2.0.0", markers = "python_version >= \"3.14\""},
+    {version = ">=1.59.0,<2.0.0"},
 ]
 proto-plus = ">=1.26.1,<2.0.0"
 protobuf = ">=6.33.5,<8.0.0"
@@ -3333,8 +3333,8 @@ files = [
 
 [package.dependencies]
 numpy = [
-    {version = ">=1.26.0", markers = "python_version < \"3.14\""},
     {version = ">=2.3.3", markers = "python_version >= \"3.14\""},
+    {version = ">=1.26.0", markers = "python_version < \"3.14\""},
 ]
 python-dateutil = ">=2.8.2"
 tzdata = {version = "*", markers = "sys_platform == \"win32\" or sys_platform == \"emscripten\""}
@@ -3388,8 +3388,8 @@ packaging = ">=22.0.0"
 pandas = ">=1.5.3"
 psutil = ">=5.9.8"
 pyarrow = [
-    {version = ">=12.0.0"},
     {version = ">=22.0.0", markers = "python_version >= \"3.14\""},
+    {version = ">=12.0.0"},
 ]
 pydata-google-auth = ">=1.5.0"
 setuptools = "*"
@@ -4111,7 +4111,7 @@ version = "6.0.3"
 description = "YAML parser and emitter for Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["notebooks"]
+groups = ["main", "notebooks"]
 files = [
     {file = "PyYAML-6.0.3-cp38-cp38-macosx_10_13_x86_64.whl", hash = "sha256:c2514fceb77bc5e7a2f7adfaa1feb2fb311607c9cb518dbc378688ec73d8292f"},
     {file = "PyYAML-6.0.3-cp38-cp38-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9c57bb8c96f6d1808c030b1687b9b5fb476abaa47f0db9c0101f5e9f394e97f4"},
@@ -5117,4 +5117,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "14c7b903f2e6301c9d6c78c6eea237dd27ec44448faaf6b91ae35e2c3cbc1f6f"
+content-hash = "a7696aee108db5098e7f7aa1f55c5b767d4a0a4d82cb610a172162111ef24943"

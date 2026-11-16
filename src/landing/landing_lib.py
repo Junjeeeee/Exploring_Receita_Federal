@@ -42,8 +42,8 @@ PASTA_TEMP = "tmp_receita"
 S3_PREFIX = "landing/receita_federal"
 TAMANHO_CHUNK_CSV = 250_000
 
-# Mantidas conforme a regra de higienização de MEI validada pelo projeto.
-# A finalidade é não persistir CPF em claro na razão social dos MEIs.
+# Mantidas conforme a regra de higienização validada pelo projeto em dados reais.
+# A finalidade é não persistir CPF em claro na razão social de empresário individual (natureza 2135).
 REGEX_CPF_SUJO = re.compile(r'(?i)[-.\s]*(?:CPF)?[-.\s]*(?<!\d)\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?!\d)[-.\s]*')
 REGEX_FILIAL_SUJA = re.compile(r'^/?\d{4}-?\d{2}')
 REGEX_LIXO_INICIO = re.compile(r'^[-.\s/]+')
@@ -235,12 +235,19 @@ def _membros_dados_rfb(zip_ref: zipfile.ZipFile):
     return membros
 
 
+def ocultar_token(texto) -> str:
+    """Troca o valor de TOKEN_SHARE por *** em qualquer texto (ex.: mensagem de exceção com a URL)."""
+    token = os.getenv("TOKEN_SHARE") or TOKEN_SHARE
+    texto = str(texto)
+    return texto.replace(token, "***") if token else texto
+
+
 def _log_retry_download(retry_state) -> None:
     """Expõe a causa de cada tentativa sem revelar a URL/token de compartilhamento."""
     erro = retry_state.outcome.exception() if retry_state.outcome else None
     print(
         f"  ⚠️ Falha ao baixar/validar ZIP (tentativa {retry_state.attempt_number}/3): "
-        f"{type(erro).__name__}: {erro}. Nova tentativa será realizada."
+        f"{type(erro).__name__}: {ocultar_token(erro)}. Nova tentativa será realizada."
     )
 
 
@@ -387,14 +394,35 @@ def descarregar_e_extrair(url: str, nome_zip: str, pasta_temp_tabela: str) -> Li
     return caminhos
 
 
-def limpar_chunk_empresas_mei(chunk: pd.DataFrame) -> pd.DataFrame:
-    """Remove CPF em claro da razão social de MEIs e converte capital_social.
+NATUREZA_EMPRESARIO_INDIVIDUAL = 2135
 
-    A regra de regex e a lógica de limpeza de MEI foram mantidas conforme a
-    validação do projeto. Valores ausentes/inválidos de capital_social ficam como
+
+def _eh_empresario_individual(natureza: pd.Series) -> pd.Series:
+    """True onde a natureza jurídica é 2135 (empresário individual).
+
+    Robusta ao tipo: aceita "2135", " 2135 ", "02135", 2135 e 2135.0. Nulo ou
+    não numérico vira False (a linha não é tocada).
+    """
+    codigo = pd.to_numeric(natureza.astype("string").str.strip(), errors="coerce")
+    return (codigo == NATUREZA_EMPRESARIO_INDIVIDUAL).fillna(False).astype(bool)
+
+
+def limpar_chunk_empresas_mei(chunk: pd.DataFrame) -> pd.DataFrame:
+    """Remove CPF em claro da razão social de empresário individual e converte capital_social.
+
+    A máscara vale para TODA natureza jurídica 2135 (empresário individual),
+    qualquer que seja o porte — inclusive MEI, ME (porte 01), EPP (03), demais (05)
+    e porte nulo. Até 2026-11-14 a condição era `porte == "01" AND natureza == "2135"`,
+    que deixava em claro o CPF de empresário individual com porte 03/05 (D-a, D-16).
+    Outras naturezas jurídicas NÃO são tocadas: são pessoas jurídicas cujo nome pode
+    conter números legítimos (ver spec 2026-11-14-mascara-cpf-empresario-individual).
+
+    O nome da função foi mantido por compatibilidade ("mei" é histórico). A regex de
+    mascaramento e o formato de saída ("NN.NNN.NNN NOME") não mudaram: foram
+    validados em dados reais. Valores ausentes/inválidos de capital_social ficam como
     nulos em vez de serem artificialmente convertidos em zero.
     """
-    mask_mei = (chunk["porte_empresa"] == "01") & (chunk["natureza_juridica"] == "2135")
+    mask_mei = _eh_empresario_individual(chunk["natureza_juridica"])
     if mask_mei.any():
         razoes_limpas = []
         subset_mei = chunk[mask_mei]
@@ -865,7 +893,9 @@ def executar_extract_landing_cli(config: TabelaLandingConfig) -> None:
     parser.add_argument("--mes_referencia_inicial", default="", help="YYYY-MM inicial (vazio = mês anterior)")
     parser.add_argument("--mes_referencia_final", default="", help="YYYY-MM final (vazio = mês inicial)")
     parser.add_argument("--force", action="store_true", help="Força novo download mesmo se o Parquet já existir no S3")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
     extrair_tabela_landing(config, args.mes_referencia_inicial, args.mes_referencia_final, force=args.force)
 
 
@@ -873,5 +903,7 @@ def executar_dq_landing_cli(config: TabelaLandingConfig) -> None:
     parser = argparse.ArgumentParser(description=f"DQ Landing S3: {config.nome_tabela}")
     parser.add_argument("--mes_referencia_inicial", default="", help="YYYY-MM inicial (vazio = mês anterior)")
     parser.add_argument("--mes_referencia_final", default="", help="YYYY-MM final (vazio = mês inicial)")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
     testar_tabela_landing(config, args.mes_referencia_inicial, args.mes_referencia_final)

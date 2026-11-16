@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "**" ] # Gatilho 1: Roda em qualquer branch que você criar
+    branches: [ "main" ] # Gatilho 1: push direto na main
   pull_request:
-    branches: [ "main" ] # Gatilho 2: Roda quando você tentar fazer merge pra main
+    branches: [ "main" ] # Gatilho 2: PRs para a main (evita rodar duas vezes no mesmo PR)
 
 jobs:
   # ---------------------------------------------------
@@ -44,20 +44,5 @@ jobs:
       - name: Executar Pytest
         run: poetry run pytest tests/
 
-  # ---------------------------------------------------
-  # CD: Entrega Contínua (Deploy) - Roda Só na Main
-  # ---------------------------------------------------
-  deploy-databricks:
-    name: Deploy no Databricks
-    needs: testes-unitarios # REGRA 1: Só inicia se os testes passarem
-    if: github.ref == 'refs/heads/main' # REGRA 2: Só inicia se for a branch main
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Fazer Checkout do Código
-        uses: actions/checkout@v4
-        
-      - name: Echo de Simulação (Futuro DABs)
-        run: |
-          echo "Testes passaram com sucesso na main!"
-          echo "Aqui entrará o comando: databricks bundle deploy"
+      - name: Checar se o job YAML está sincronizado com o gerador
+        run: poetry run python -m src.jobs.gerar_job --checar

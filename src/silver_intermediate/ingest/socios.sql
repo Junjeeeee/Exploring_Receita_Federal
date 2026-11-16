@@ -4,6 +4,8 @@
 -- da janela, completos. Exceção (carga inicial): se mes_ini for o primeiro mês existente na Bronze
 -- (2023-05, primeiro snapshot publicado pela RFB), não há mês anterior; o mês só abre as versões e
 -- nenhuma saída do QSA é inferida nele. Veja README.md antes da primeira execução.
+-- Reprocessar uma janela é idempotente: as versões da janela são recalculadas da Bronze e as versões
+-- anteriores/posteriores das PKs afetadas são preservadas.
 -- A PK é herdada da Bronze; nenhum CPF/CNPJ em claro é reconstruído aqui.
 
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_intermediate;
@@ -34,6 +36,19 @@ USING DELTA
 PARTITIONED BY (is_current)
 COMMENT 'Camada Silver Intermediate (SCD2): Histórico do Quadro de Sócios e Administradores e da vigência das relações societárias.';
 
+-- Guarda extra, em instrução própria antes do MERGE: se a Bronze não tem NENHUMA linha na janela
+-- (mês anterior + janela), falha aqui. Motivo: com a Bronze vazia o otimizador adaptativo (AQE) pode
+-- descartar a CTE validacao_snapshots (join com lado vazio vira vazio) e o MERGE apagaria as versões da janela.
+SELECT ASSERT_TRUE(
+    EXISTS (
+        SELECT 1 FROM tcc_receita.bronze.socios b
+        WHERE b.mes_referencia BETWEEN
+              date_format(add_months(to_date(concat(COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')), '-01')), -1), 'yyyy-MM')
+              AND COALESCE(NULLIF(TRIM('{{mes_referencia_final}}'), ''), COALESCE(NULLIF(TRIM('{{mes_referencia_inicial}}'), ''), date_format(add_months(current_date(), -1), 'yyyy-MM')))
+    ),
+    'Bronze socios sem nenhuma linha na janela informada (mês anterior incluído): nada a processar.'
+) AS bronze_com_dados;
+
 MERGE INTO tcc_receita.silver_intermediate.socios AS target
 USING (
     WITH params AS (
@@ -47,7 +62,7 @@ USING (
         SELECT b.*,
                ROW_NUMBER() OVER (
                    PARTITION BY b.pk, b.mes_referencia
-                   ORDER BY b.bronze_processed_at DESC NULLS LAST
+                   ORDER BY b.bronze_processed_at DESC NULLS LAST, b.change_hash DESC  -- PK repetida na Receita: desempate determinístico (B16)
                ) AS rn
         FROM tcc_receita.bronze.socios b
         CROSS JOIN params p
@@ -57,6 +72,9 @@ USING (
           AND b.pk IS NOT NULL
     ),
     validacao_snapshots AS (
+        -- Agregação SEM GROUP BY: devolve sempre exatamente uma linha, mesmo com a Bronze vazia na janela
+        -- (com GROUP BY, janela vazia = zero linhas = nenhum ASSERT avaliado; ver docs/critica.md C-06).
+        -- bronze_limpo consome esta CTE (CROSS JOIN + WHERE); sem esse consumo o plano nem a executaria.
         SELECT
             ASSERT_TRUE(
                 p.mes_ini RLIKE '^[0-9]{4}-(0[1-9]|1[0-2])$'
@@ -65,16 +83,18 @@ USING (
                 'Janela inválida: informe mes_ini e mes_fim no formato YYYY-MM e mes_ini <= mes_fim.'
             ) AS janela_valida,
             ASSERT_TRUE(
-                COUNT(DISTINCT b.mes_referencia) = CAST(MONTHS_BETWEEN(
+                c.qtd_meses = CAST(MONTHS_BETWEEN(
                     TO_DATE(CONCAT(p.mes_fim, '-01')),
                     TO_DATE(CONCAT(p.mes_ini, '-01'))
                 ) AS INT) + 1
                   + CASE WHEN p.mes_ini > p.primeiro_mes_bronze THEN 1 ELSE 0 END,
-                'Snapshots Bronze de socios ausentes: é necessário o mês anterior ao início (exceto na carga inicial) e todos os meses da janela.'
+                CONCAT(
+                    'Snapshots Bronze de socios ausentes: é necessário o mês anterior ao início (exceto na carga inicial) e todos os meses da janela. Meses distintos encontrados na Bronze: ',
+                    c.qtd_meses
+                )
             ) AS snapshots_validos
-        FROM bronze_raw b
-        CROSS JOIN params p
-        GROUP BY p.mes_ini, p.mes_fim, p.primeiro_mes_bronze
+        FROM params p
+        CROSS JOIN (SELECT COUNT(DISTINCT mes_referencia) AS qtd_meses FROM bronze_raw) c
     ),
     bronze_limpo AS (
         SELECT
@@ -85,7 +105,7 @@ USING (
             NULLIF(TRIM(cnpj_cpf_socio), '') AS cnpj_cpf_socio,
             NULLIF(TRIM(qualificacao_socio), '') AS qualificacao_socio,
             CASE
-                WHEN try_to_date(TRIM(data_entrada_sociedade), 'yyyyMMdd') IS NOT NULL
+                WHEN CAST(try_to_timestamp(TRIM(data_entrada_sociedade), 'yyyyMMdd') AS DATE) IS NOT NULL
                 THEN TRIM(data_entrada_sociedade)
                 ELSE NULL
             END AS data_entrada_sociedade,
@@ -150,38 +170,10 @@ USING (
             ON atual.pk = anterior.pk
            AND atual.mes_referencia = date_format(m.mes_data, 'yyyy-MM')
     ),
-    estados_inativos_legado AS (
-        -- Na primeira execução desta regra, corrige vínculos que ficaram marcados como atuais
-        -- pela lógica antiga, mas já não aparecem nem no mês anterior nem no primeiro mês da janela.
-        SELECT
-            s.pk, s.cnpj_basico, s.identificador_socio, s.nome_socio_razao_social,
-            s.cnpj_cpf_socio, s.qualificacao_socio, s.data_entrada_sociedade,
-            s.pais, s.representante_legal, s.nome_representante,
-            s.qualificacao_representante_legal, s.faixa_etaria,
-            FALSE AS vinculo_ativo,
-            p.mes_ini AS mes_referencia,
-            s.inserted_at,
-            SHA2(TO_JSON(NAMED_STRUCT(
-                'source_change_hash', s.change_hash,
-                'vinculo_ativo', FALSE
-            )), 256) AS change_hash
-        FROM tcc_receita.silver_intermediate.socios s
-        CROSS JOIN params p
-        LEFT ANTI JOIN bronze_limpo atual
-            ON atual.pk = s.pk
-           AND atual.mes_referencia = p.mes_ini
-        LEFT ANTI JOIN bronze_limpo anterior
-            ON anterior.pk = s.pk
-           AND anterior.mes_referencia = date_format(add_months(to_date(concat(p.mes_ini, '-01')), -1), 'yyyy-MM')
-        WHERE s.is_current = TRUE
-          AND s.vinculo_ativo = TRUE
-    ),
     eventos_janela AS (
         SELECT * FROM estados_ativos
         UNION ALL
         SELECT * FROM estados_inativos
-        UNION ALL
-        SELECT * FROM estados_inativos_legado
     ),
     pks_afetadas AS (
         SELECT DISTINCT pk FROM eventos_janela

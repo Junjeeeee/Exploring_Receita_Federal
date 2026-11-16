@@ -4,6 +4,7 @@ from src.landing.landing_lib import (
     extrair_tabela_landing,
     testar_tabela_landing,
     gerar_range_meses,
+    ocultar_token,
 )
 
 # Configurações das tabelas da Landing
@@ -83,7 +84,7 @@ def orquestrar(tabelas_alvo: str, mes_ini: str, mes_fim: str, force: bool):
                     _processar_tabela(config, mes, mes, force)
                 except Exception as exc:
                     print(f"\n❌ ERRO FATAL: {config.nome_tabela.upper()} no mês {mes}.")
-                    print(f"Detalhes: {exc}")
+                    print(f"Detalhes: {ocultar_token(exc)}")
                     print("Orquestração interrompida para evitar inconsistência.")
                     raise
 
@@ -93,7 +94,7 @@ def orquestrar(tabelas_alvo: str, mes_ini: str, mes_fim: str, force: bool):
             _processar_tabela(config, mes_ini, mes_fim, force)
         except Exception as exc:
             print(f"\n❌ ERRO FATAL: {config.nome_tabela.upper()} (estática).")
-            print(f"Detalhes: {exc}")
+            print(f"Detalhes: {ocultar_token(exc)}")
             print("Orquestração interrompida para evitar inconsistência.")
             raise
 

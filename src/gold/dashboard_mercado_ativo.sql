@@ -1,7 +1,7 @@
 CREATE SCHEMA IF NOT EXISTS tcc_receita.gold;
 
 CREATE OR REPLACE TABLE tcc_receita.gold.dashboard_mercado_ativo
-COMMENT 'Camada Gold: Fotografia atual das empresas matrizes ativas para exploração de concorrência e ranking de capital social.'
+COMMENT 'Camada Gold: fotografia atual (último snapshot) das empresas matrizes ativas para exploração de concorrência e ranking de capital social. exibir_razao_social = FALSE para MEI, empresário individual (2135) e razão social com 11 dígitos.'
 AS
 WITH ponte_primaria AS (
     SELECT sk_grupo_cnae, sk_cnae 
@@ -35,7 +35,18 @@ SELECT /*+ BROADCAST(cnae) */
     cnae.nome_classe AS classe_cnae,
     cnae.nome_divisao AS divisao_cnae,
     cnae.grande_setor_economico AS grande_area_cnae,
-    NOW() AS data_carga_etl
+    NOW() AS data_carga_etl,
+    -- Colunas novas (2026-11-14), no fim para não deslocar as existentes.
+    c.codigo_natureza_juridica,
+    -- LGPD (C-12): a razão social NÃO é alterada; esta flag diz se o dashboard pode exibi-la.
+    -- Não exibir quando pode conter nome ou CPF de pessoa física: MEI, empresário individual
+    -- (natureza 2135) ou 11 dígitos seguidos no texto (padrão de CPF).
+    CASE
+        WHEN c.opcao_pelo_mei = TRUE THEN FALSE
+        WHEN TRIM(c.codigo_natureza_juridica) = '2135' THEN FALSE
+        WHEN c.razao_social RLIKE '[0-9]{11}' THEN FALSE
+        ELSE TRUE
+    END AS exibir_razao_social
 FROM tcc_receita.silver_final.dim_empresa c
 LEFT JOIN ponte_primaria b 
     ON c.sk_grupo_cnae = b.sk_grupo_cnae
@@ -45,4 +56,7 @@ WHERE c.sk_empresa != -1
   AND c.registro_ativo = TRUE 
   AND c.situacao_cadastral_matriz = 'ATIVA';
 
-OPTIMIZE tcc_receita.gold.dashboard_mercado_ativo ZORDER BY (uf, municipio, nome_cnae);
+-- Sem ZORDER BY: o Databricks pode ativar clustering automático (liquid clustering) em tabela gerenciada,
+-- e o Delta recusa ZORDER nesse caso (falhou em 2026-11-14). O OPTIMIZE simples compacta os arquivos e,
+-- se houver clustering, reagrupa pelas colunas escolhidas.
+OPTIMIZE tcc_receita.gold.dashboard_mercado_ativo;

@@ -23,6 +23,16 @@
 - **Ética/LGPD:** dados públicos; CPF já tratado na landing. Dashboard não expõe nomes de sócios nem endereço de
   MEI (questão ética, não legal). Discussão mais forte só se houver visualizador de grafo público.
 
+## Enquadramento da pesquisa (em reflexão do autor, 2026-11-08)
+
+- **Tese preferida:** a arquitetura (snapshots → SCD2 + log de eventos → camadas) **habilita vários usos sobre a
+  mesma base**: dashboard, grafo e ML. O TCC mostraria isso na prática, com foco em implementação, não só desenho.
+- **Plano B:** se só o dashboard ficar pronto, o TCC vira mais **orientado a resultados** (dinâmica empresarial,
+  achados do dashboard/análises) e grafo e ML vão para *Trabalhos futuros*.
+- O que depende da orientadora é só o **cronograma**; as demais etapas estão acordadas.
+- Implicação para as specs: os critérios de avaliação de cada entregável devem funcionar nos dois cenários
+  (o dashboard e as análises precisam se sustentar sozinhos).
+
 ## Uso de IA (para a declaração exigida pela UFRJ)
 
 - Uso de IA é permitido desde que o autor assuma responsabilidade e entenda o código; exige **declaração de uso**.

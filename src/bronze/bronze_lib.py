@@ -71,7 +71,8 @@ def obter_bucket_landing() -> str:
 
 
 def configurar_ambiente_unity_catalog(spark: SparkSession):
-    spark.sql("CREATE CATALOG IF NOT EXISTS tcc_receita")
+    # O catálogo é pré-requisito (criado uma vez, com managed location no S3): o local de armazenamento
+    # depende da conta e o Job não deve ter permissão de CREATE CATALOG. Ver src/jobs/README.md.
     spark.sql("CREATE SCHEMA IF NOT EXISTS tcc_receita.bronze")
 
 
@@ -162,26 +163,16 @@ def _adicionar_pk(df, config: TabelaBronzeConfig):
     return df
 
 
-def _remover_duplicatas_ou_falhar(df, nome_tabela: str):
-    """Elimina cópias exatas; não escolhe arbitrariamente entre linhas conflitantes."""
+def _remover_copias_exatas(df, nome_tabela: str):
+    """Remove só cópias idênticas. PKs repetidas com conteúdo divergente (a Receita publica algumas)
+    são MANTIDAS: escolher uma versão é regra de negócio e fica na Silver (ROW_NUMBER por pk/mês com
+    desempate por change_hash). Aqui apenas registramos quantas há. Ver backlog B16."""
     df = df.dropDuplicates()
-    if "pk" not in df.columns:
-        return df
-    conflitos = (
-        df.groupBy("pk")
-        .agg(F.countDistinct("change_hash").alias("qtd_hashes"))
-        .filter(F.col("qtd_hashes") > 1)
-        .limit(10)
-        .collect()
-    )
-    if conflitos:
-        amostra = [r["pk"] for r in conflitos]
-        raise ValueError(
-            f"PK duplicada com conteúdo divergente em {nome_tabela}. "
-            f"Amostra de PKs: {amostra}. Nenhum registro foi descartado."
-        )
-    # Duplicatas com mesmo hash representam a mesma versão lógica da linha.
-    return df.dropDuplicates(["pk"])
+    if "pk" in df.columns:
+        qtd = df.groupBy("pk").count().filter("count > 1").count()
+        if qtd:
+            print(f"  ⚠️ {qtd} PK(s) repetidas com conteúdo divergente em {nome_tabela} (mantidas; a Silver desempata).")
+    return df
 
 
 def ingerir_tabela_bronze(
@@ -232,7 +223,7 @@ def ingerir_tabela_bronze(
         )
         df_transformado = df_transformado.withColumn("change_hash", F.sha2(payload_hash, 256))
         df_transformado = _adicionar_pk(df_transformado, config)
-        df_transformado = _remover_duplicatas_ou_falhar(df_transformado, nome_completo_tabela)
+        df_transformado = _remover_copias_exatas(df_transformado, nome_completo_tabela)
 
         if mes_referencia is not None:
             df_bronze = df_transformado.withColumn("mes_referencia", F.lit(mes_referencia))
@@ -313,7 +304,9 @@ def executar_ingestao_cli(config: TabelaBronzeConfig):
     parser = argparse.ArgumentParser(description=f"Ingestão Bronze: {config.nome_tabela_uc}")
     parser.add_argument("--mes_referencia_inicial", default="", help="Mês inicial (YYYY-MM). Vazio = Mês-1")
     parser.add_argument("--mes_referencia_final", default="", help="Mês final (YYYY-MM). Vazio = Mês-1")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     spark = SparkSession.builder.getOrCreate()
     ingerir_tabela_bronze(spark, config, args.mes_referencia_inicial, args.mes_referencia_final)
@@ -324,7 +317,9 @@ def executar_dq_cli(config: TabelaBronzeConfig):
     parser = argparse.ArgumentParser(description=f"DQ Bronze: {config.nome_tabela_uc}")
     parser.add_argument("--mes_referencia_inicial", default="", help="Mês inicial (YYYY-MM). Vazio = Mês-1")
     parser.add_argument("--mes_referencia_final", default="", help="Mês final (YYYY-MM). Vazio = Mês-1")
-    args, _ = parser.parse_known_args()
+    args, extras = parser.parse_known_args()
+    if extras:
+        parser.error(f"argumentos desconhecidos: {extras}")
 
     spark = SparkSession.builder.getOrCreate()
     testar_tabela_bronze(spark, config, args.mes_referencia_inicial, args.mes_referencia_final)

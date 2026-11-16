@@ -29,7 +29,7 @@ Requer snapshot completo do mês anterior à janela; snapshot parcial gera saíd
 
 ## D-07 — LGPD
 Nenhum CPF em claro; documentos mantidos como fornecidos (parcialmente mascarados), nunca desmascarados.
-Mascaramento do nome MEI na landing é preservado (validado em dados reais).
+Mascaramento do nome MEI na landing é preservado (validado em dados reais). Condição ampliada em D-16.
 
 ## D-08 — Reprocessamento (revista em 2026-11-08)
 Produção: reprocessar janela preserva versões passadas e futuras (`MERGE`, `REPLACE WHERE`).
@@ -59,3 +59,32 @@ para o TCC e para a declaração de uso de IA).
 **Motivo:** velocidade sem perder rastreabilidade.
 **Consequências:** escrever spec retroativa ao sair do protótipo — pendentes: `job-databricks` (runners +
 Job YAML) e `carga-inicial` (B9).
+
+## D-16 — Máscara de CPF para todo empresário individual
+2026-11-14 · aceita (autor, backlog D-a)
+**Contexto:** a máscara só valia para `porte = '01' AND natureza = '2135'`; 2.816 razões de natureza 2135 com
+porte 03/05 tinham CPF em claro (base real, 4 meses), e ~370 em outras naturezas tinham 11 dígitos seguidos.
+**Decisão:** mascarar toda natureza 2135, qualquer porte. Regex e formato de saída inalterados. Outras
+naturezas não são mascaradas.
+**Alternativas:** mascarar 11 dígitos em qualquer natureza (altera nomes de PJ sem evidência de CPF);
+manter a condição antiga (viola LGPD).
+**Motivo:** empresário individual é pessoa física — o número é CPF; em PJ o número pode ser legítimo.
+**Consequências:** vale só para extrações novas; reextrair `empresas` está pendente (sem autorização ainda).
+Medir as ~370 após a reextração. Spec: `specs/features/2026-11-14-mascara-cpf-empresario-individual.md`.
+
+## D-17 — Abertura e baixa no mesmo mês (primeira aparição já BAIXADA)
+2026-11-14 · aceita (autor)
+**Contexto:** no `fato_empresa_mes` a baixa exigia versão no mês anterior. Empresa que abre e fecha entre dois
+snapshots aparece pela primeira vez já BAIXADA e contava só como abertura (base real: 7.818 / 7.386 / 10.533
+empresas em jun/jul/ago/2023 aparecem já BAIXADA ou SUSPENSA). O log já registrava o evento de estado.
+**Decisão:** primeira aparição pós-baseline já BAIXADA = abertura **e** baixa no mês de detecção (falência e
+idade na baixa como em qualquer baixa; porte = o da própria versão). Idem INAPTA/SUSPENSA. Estoque de ativas,
+entradas/saídas e `qtd_baixas_de_ativas` não mudam: a empresa nunca esteve ativa num snapshot.
+**Alternativas:** contar só a abertura (regra antiga; "não faz sentido" para o autor); não contar nem abertura.
+**Consequências:** ~8 mil baixas a mais por mês na base real; aberturas por baixa de agosto cai de 2,09 para
+~1,98; taxa de fechamento por mil não muda. O dashboard (`baixas_motivo`) passa a contar a primeira aparição e
+fecha com o fato (DQ 2b). Spec: `specs/features/2026-11-14-semantica-eventos-e-fluxos.md` §2.4.
+**Complemento D-17b (2026-11-14, autor):** porte dessas baixas pelas datas do Simples, não pela natureza
+jurídica (empresário individual pode ser ME): `MEI` se opção pelo MEI ≤ data da baixa e exclusão nula ou ≥ data
+da baixa (tolerância 0 dia; amostra: exclusão = data da baixa em 100%). Base real: ~98% das marcadas ME tinham
+as duas datas. % MEI das baixas volta ao patamar anterior (amostra: ~62–68% → ~67–71%).

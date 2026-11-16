@@ -49,7 +49,8 @@ Detalhes e DAG: [docs/architecture.md](docs/architecture.md).
 
 - **LGPD**: nunca CPF em claro; não desmascarar documentos; `informacao_adicional` sem documentos pessoais.
 - **Regex de mascaramento MEI** (`limpar_chunk_empresas_mei` em `src/landing/landing_lib.py`) foi validada
-  em dados reais — não alterar sem evidência concreta de falha.
+  em dados reais — não alterar sem evidência concreta de falha. Vale para toda natureza 2135 (empresário
+  individual), qualquer porte (D-16).
 - **DQ (data quality = testes/asserções de qualidade)** pode ser melhorado ou redesenhado quando fizer sentido.
 - **Bronze não tem regra de negócio.** Regras vivem em silver/gold.
 - **Chave técnica ≠ chave de negócio**: nunca extrair CNPJ de `pk` via regex; juntar por `cnpj_basico`.

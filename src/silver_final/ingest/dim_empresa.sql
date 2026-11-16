@@ -1,11 +1,14 @@
 -- Silver Final | dim_empresa
--- Granularidade: uma linha por CNPJ raiz e fatia temporal resultante da
--- interseção dos SCD2 de matriz, empresa e Simples/MEI.
+-- Granularidade: uma linha por CNPJ raiz e fatia temporal. As fatias cobrem exatamente a vigência da
+-- matriz canônica, cortada nas fronteiras dos SCD2 de empresa e de Simples/MEI (C-02).
 -- Dependência: dim_grupo_cnae deve ser atualizada antes desta dimensão.
+-- Carga: rebuild total (INSERT OVERWRITE). Por isso o DDL é CREATE OR REPLACE: recriar a tabela a cada
+-- execução não perde nada e aplica mudanças de schema (ex.: colunas novas de 2026-11-14) sem migração
+-- separada. Aceitável em desenvolvimento (D-08); consumidores leem por nome de coluna.
 
 CREATE SCHEMA IF NOT EXISTS tcc_receita.silver_final;
 
-CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.dim_empresa (
+CREATE OR REPLACE TABLE tcc_receita.silver_final.dim_empresa (
     sk_empresa BIGINT COMMENT 'Chave substituta hash 64-bit de nk_empresa.',
     sk_grupo_cnae BIGINT COMMENT 'FK para dim_grupo_cnae; -1 quando não há CNAE válido.',
     nk_empresa STRING COMMENT 'Chave natural da versão: cnpj_raiz|inicio_vigencia.',
@@ -18,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.dim_empresa (
     registro_ativo BOOLEAN COMMENT 'TRUE quando fim_vigencia é NULL.',
     possui_cadastro_empresa BOOLEAN COMMENT 'Indica correspondência temporal na Intermediate de empresas.',
     razao_social STRING COMMENT 'Razão social da empresa, com acentuação preservada.',
+    codigo_natureza_juridica STRING COMMENT 'Código da natureza jurídica (ex.: 2135); NULL sem cadastro de empresa.',
     natureza_juridica STRING COMMENT 'Descrição da natureza jurídica, com fallback para o código.',
     capital_social DOUBLE COMMENT 'Capital social em BRL, conforme a precisão da Silver Intermediate.',
     ente_federativo_responsavel STRING COMMENT 'Ente federativo responsável, quando aplicável.',
@@ -27,9 +31,11 @@ CREATE TABLE IF NOT EXISTS tcc_receita.silver_final.dim_empresa (
     data_inicio_atividade DATE COMMENT 'Data de início da atividade da matriz, validada no calendário.',
     nome_fantasia_matriz STRING COMMENT 'Nome fantasia do estabelecimento matriz.',
     situacao_cadastral_matriz STRING COMMENT 'Descrição da situação cadastral da matriz.',
+    data_situacao_cadastral DATE COMMENT 'Data da situação cadastral da matriz declarada pela Receita, validada no calendário.',
+    codigo_motivo_situacao_cadastral STRING COMMENT 'Código do motivo da situação cadastral da matriz (ex.: 01).',
     motivo_situacao_cadastral STRING COMMENT 'Descrição do motivo cadastral, com fallback para o código.',
     cep STRING COMMENT 'CEP de oito dígitos da matriz.',
-    uf STRING COMMENT 'UF consolidada, priorizando o diretório oficial de CEPs.',
+    uf STRING COMMENT 'UF consolidada: UF do CEP quando válida (duas letras), senão a do cadastro da Receita.',
     municipio STRING COMMENT 'Município consolidado, priorizando CEP e domínio RFB.',
     codigo_ibge_municipio STRING COMMENT 'Código IBGE de sete dígitos quando disponível.',
     bairro_campo_livre STRING COMMENT 'Bairro informado no cadastro da Receita Federal.',
@@ -54,9 +60,10 @@ INSERT OVERWRITE tcc_receita.silver_final.dim_empresa (
     sk_empresa, sk_grupo_cnae, nk_empresa, cnpj_raiz,
     inicio_vigencia, fim_vigencia, data_inicio_vigencia, data_fim_vigencia,
     cnpj_matriz, registro_ativo, possui_cadastro_empresa, razao_social,
-    natureza_juridica, capital_social, ente_federativo_responsavel,
+    codigo_natureza_juridica, natureza_juridica, capital_social, ente_federativo_responsavel,
     qualificacao_responsavel, opcao_pelo_mei, opcao_pelo_simples,
     data_inicio_atividade, nome_fantasia_matriz, situacao_cadastral_matriz,
+    data_situacao_cadastral, codigo_motivo_situacao_cadastral,
     motivo_situacao_cadastral, cep, uf, municipio, codigo_ibge_municipio,
     bairro_campo_livre, localidade_cep, localidade_analitica,
     latitude_cep, longitude_cep, logradouro_completo,
@@ -87,7 +94,9 @@ dom_mot AS (
 cep_origem AS (
     SELECT
         REGEXP_REPLACE(TRIM(cep), '[^0-9]', '') AS cep_limpo,
-        NULLIF(UPPER(TRIM(uf)), '') AS uf_cep,
+        -- B24: a tabela de CEPs tem UFs concatenadas ('RJ,SP', 'AP,RS', 'PB,RN'). Só aceita duas letras;
+        -- fora disso o CEP fica sem UF e a dimensão cai na UF do cadastro da Receita.
+        CASE WHEN UPPER(TRIM(uf)) RLIKE '^[A-Z]{2}$' THEN UPPER(TRIM(uf)) END AS uf_cep,
         NULLIF(UPPER(TRIM(cidade)), '') AS cidade_cep,
         NULLIF(UPPER(TRIM(REGEXP_REPLACE(localidade, r'[^\p{L}\p{M}\p{N} ]', ''))), '') AS localidade_cep,
         REGEXP_REPLACE(TRIM(codigo_ibge), '[^0-9]', '') AS codigo_ibge_limpo,
@@ -132,6 +141,7 @@ est_matriz AS (
         data_inicio_atividade,
         nome_fantasia,
         situacao_cadastral_desc,
+        data_situacao_cadastral,
         motivo_situacao_cadastral,
         CASE WHEN LENGTH(REGEXP_REPLACE(TRIM(cep), '[^0-9]', '')) = 8
              THEN REGEXP_REPLACE(TRIM(cep), '[^0-9]', '') END AS cep,
@@ -159,11 +169,21 @@ est_matriz AS (
         ))), ','), '') AS lista_cnaes_secundarios,
         valid_since,
         COALESCE(valid_until, '9999-12') AS valid_until
-    FROM tcc_receita.silver_intermediate.estabelecimentos
-    WHERE identificador_matriz_filial = '1'
-      AND cnpj_basico IS NOT NULL
-      AND valid_since IS NOT NULL
-      AND valid_since < COALESCE(valid_until, '9999-12')
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    -- A matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição de matriz),
+    -- e às vezes há mais de um marcado como matriz no mesmo período (B19). Regra da matriz canônica:
+    -- em cada período vale o estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo,
+    -- fica o de menor ordem (0001 primeiro). A versão de ordem maior que se sobrepõe é descartada inteira.
+    LEFT ANTI JOIN tcc_receita.silver_intermediate.estabelecimentos melhor
+        ON melhor.cnpj_basico = e.cnpj_basico
+       AND melhor.identificador_matriz_filial = '1'
+       AND melhor.cnpj_ordem < e.cnpj_ordem
+       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
+       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
+    WHERE e.identificador_matriz_filial = '1'
+      AND e.cnpj_basico IS NOT NULL
+      AND e.valid_since IS NOT NULL
+      AND e.valid_since < COALESCE(e.valid_until, '9999-12')
 ),
 emp_limpa AS (
     SELECT
@@ -185,10 +205,43 @@ sim_limpa AS (
       AND valid_since IS NOT NULL
       AND valid_since < COALESCE(valid_until, '9999-12')
 ),
--- A chave de relacionamento é cnpj_basico; pk é uma chave técnica serializada.
-emp_est AS (
+-- Fatiamento temporal (C-02). A dimensão cobre EXATAMENTE os meses da matriz canônica, fatiada pelas
+-- fronteiras de empresas e dados_simples. Antes, a interseção com LEFT JOIN + WHERE descartava os trechos
+-- da matriz sem cobertura de empresas/Simples (a empresa sumia nesses meses).
+-- Passo 1: todas as fronteiras (inícios e fins) das três fontes, por CNPJ raiz. A chave de relacionamento
+-- é cnpj_basico; pk é uma chave técnica serializada e não é usada para juntar.
+fronteiras AS (
+    SELECT cnpj_basico, valid_since AS fronteira FROM est_matriz
+    UNION SELECT cnpj_basico, valid_until FROM est_matriz
+    UNION SELECT cnpj_basico, valid_since FROM emp_limpa
+    UNION SELECT cnpj_basico, valid_until FROM emp_limpa
+    UNION SELECT cnpj_basico, valid_since FROM sim_limpa
+    UNION SELECT cnpj_basico, valid_until FROM sim_limpa
+),
+-- Passo 2: fatias elementares [fronteira_i, fronteira_i+1). Nenhuma fonte muda de versão dentro de uma
+-- fatia, então basta olhar o mês inicial da fatia para saber qual versão de cada fonte vale nela.
+-- A última fronteira de cada CNPJ não abre fatia (LEAD nulo).
+fatias AS (
+    SELECT cnpj_basico, inicio_fatia, fim_fatia
+    FROM (
+        SELECT
+            cnpj_basico,
+            fronteira AS inicio_fatia,
+            LEAD(fronteira) OVER (PARTITION BY cnpj_basico ORDER BY fronteira) AS fim_fatia
+        FROM fronteiras
+    )
+    WHERE fim_fatia IS NOT NULL
+),
+-- Passo 3: cada fonte entra na fatia que ela contém (valid_since <= início da fatia < valid_until).
+-- Matriz com INNER JOIN: fatias fora da vigência da matriz (antes, depois ou em lacunas) são descartadas.
+-- Empresas e Simples com LEFT JOIN: sem cobertura, os atributos ficam NULL (NULL ≠ FALSE).
+-- Se uma SCD2 de origem tiver versões sobrepostas, a fatia duplica; o DQ (colisão de SK) acusa — não se
+-- resolve em silêncio (D-09).
+unificado_raw AS (
     SELECT
         est.*,
+        f.inicio_fatia AS valid_since_final,
+        f.fim_fatia AS valid_until_final,
         (emp.pk IS NOT NULL) AS possui_cadastro_empresa,
         emp.razao_social,
         emp.natureza_juridica,
@@ -196,32 +249,23 @@ emp_est AS (
         emp.capital_social,
         emp.porte_empresa,
         emp.ente_federativo_responsavel,
-        GREATEST(est.valid_since, COALESCE(emp.valid_since, est.valid_since)) AS vs_1,
-        LEAST(est.valid_until, COALESCE(emp.valid_until, est.valid_until)) AS vu_1
-    FROM est_matriz est
+        sim.opcao_pelo_mei_bool,
+        sim.opcao_pelo_simples_bool,
+        CONCAT_WS('|', COALESCE(est.cnae_primario, 'SEM_PRIMARIO'),
+                       COALESCE(est.lista_cnaes_secundarios, 'SEM_SECUNDARIO')) AS nk_grupo_cnae_calc
+    FROM fatias f
+    INNER JOIN est_matriz est
+        ON f.cnpj_basico = est.cnpj_basico
+       AND est.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < est.valid_until
     LEFT JOIN emp_limpa emp
-        ON est.cnpj_basico = emp.cnpj_basico
-       AND est.valid_since < emp.valid_until
-       AND est.valid_until > emp.valid_since
-    WHERE GREATEST(est.valid_since, COALESCE(emp.valid_since, est.valid_since))
-        < LEAST(est.valid_until, COALESCE(emp.valid_until, est.valid_until))
-),
-unificado_raw AS (
-    SELECT
-        ee.*,
-        CASE WHEN sim.pk IS NULL THEN CAST(NULL AS BOOLEAN) ELSE sim.opcao_pelo_mei_bool END AS opcao_pelo_mei_bool,
-        CASE WHEN sim.pk IS NULL THEN CAST(NULL AS BOOLEAN) ELSE sim.opcao_pelo_simples_bool END AS opcao_pelo_simples_bool,
-        GREATEST(ee.vs_1, COALESCE(sim.valid_since, ee.vs_1)) AS valid_since_final,
-        LEAST(ee.vu_1, COALESCE(sim.valid_until, ee.vu_1)) AS valid_until_final,
-        CONCAT_WS('|', COALESCE(ee.cnae_primario, 'SEM_PRIMARIO'),
-                       COALESCE(ee.lista_cnaes_secundarios, 'SEM_SECUNDARIO')) AS nk_grupo_cnae_calc
-    FROM emp_est ee
+        ON f.cnpj_basico = emp.cnpj_basico
+       AND emp.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < emp.valid_until
     LEFT JOIN sim_limpa sim
-        ON ee.cnpj_basico = sim.cnpj_basico
-       AND ee.vs_1 < sim.valid_until
-       AND ee.vu_1 > sim.valid_since
-    WHERE GREATEST(ee.vs_1, COALESCE(sim.valid_since, ee.vs_1))
-        < LEAST(ee.vu_1, COALESCE(sim.valid_until, ee.vu_1))
+        ON f.cnpj_basico = sim.cnpj_basico
+       AND sim.valid_since <= f.inicio_fatia
+       AND f.inicio_fatia < sim.valid_until
 ),
 dim_enriquecida AS (
     SELECT
@@ -239,15 +283,18 @@ dim_enriquecida AS (
         u.valid_until_final = '9999-12' AS registro_ativo,
         u.possui_cadastro_empresa,
         u.razao_social,
+        u.natureza_juridica AS codigo_natureza_juridica,
         COALESCE(nat.descricao, u.natureza_juridica) AS natureza_juridica,
         CAST(u.capital_social AS DOUBLE) AS capital_social,
         u.ente_federativo_responsavel,
         COALESCE(qual.descricao, u.qualificacao_responsavel) AS qualificacao_responsavel,
         u.opcao_pelo_mei_bool AS opcao_pelo_mei,
         u.opcao_pelo_simples_bool AS opcao_pelo_simples,
-        try_to_date(u.data_inicio_atividade, 'yyyyMMdd') AS data_inicio_atividade,
+        CAST(try_to_timestamp(u.data_inicio_atividade, 'yyyyMMdd') AS DATE) AS data_inicio_atividade,
         u.nome_fantasia AS nome_fantasia_matriz,
         u.situacao_cadastral_desc AS situacao_cadastral_matriz,
+        CAST(try_to_timestamp(u.data_situacao_cadastral, 'yyyyMMdd') AS DATE) AS data_situacao_cadastral,
+        u.motivo_situacao_cadastral AS codigo_motivo_situacao_cadastral,
         COALESCE(mot.descricao, u.motivo_situacao_cadastral) AS motivo_situacao_cadastral,
         u.cep,
         COALESCE(cep_ref.uf_cep, u.uf) AS uf,
@@ -301,6 +348,7 @@ ghost_row AS (
         FALSE AS registro_ativo,
         FALSE AS possui_cadastro_empresa,
         'NAO APLICAVEL / INEXISTENTE' AS razao_social,
+        CAST(NULL AS STRING) AS codigo_natureza_juridica,
         'NAO APLICAVEL' AS natureza_juridica,
         CAST(0.0 AS DOUBLE) AS capital_social,
         CAST(NULL AS STRING) AS ente_federativo_responsavel,
@@ -310,6 +358,8 @@ ghost_row AS (
         CAST(NULL AS DATE) AS data_inicio_atividade,
         CAST(NULL AS STRING) AS nome_fantasia_matriz,
         'INEXISTENTE' AS situacao_cadastral_matriz,
+        CAST(NULL AS DATE) AS data_situacao_cadastral,
+        CAST(NULL AS STRING) AS codigo_motivo_situacao_cadastral,
         'NAO APLICAVEL' AS motivo_situacao_cadastral,
         '00000000' AS cep,
         'NA' AS uf,
@@ -336,9 +386,10 @@ SELECT
     sk_empresa, sk_grupo_cnae, nk_empresa, cnpj_raiz,
     inicio_vigencia, fim_vigencia, data_inicio_vigencia, data_fim_vigencia,
     cnpj_matriz, registro_ativo, possui_cadastro_empresa, razao_social,
-    natureza_juridica, capital_social, ente_federativo_responsavel,
+    codigo_natureza_juridica, natureza_juridica, capital_social, ente_federativo_responsavel,
     qualificacao_responsavel, opcao_pelo_mei, opcao_pelo_simples,
     data_inicio_atividade, nome_fantasia_matriz, situacao_cadastral_matriz,
+    data_situacao_cadastral, codigo_motivo_situacao_cadastral,
     motivo_situacao_cadastral, cep, uf, municipio, codigo_ibge_municipio,
     bairro_campo_livre, localidade_cep, localidade_analitica,
     latitude_cep, longitude_cep, logradouro_completo,
