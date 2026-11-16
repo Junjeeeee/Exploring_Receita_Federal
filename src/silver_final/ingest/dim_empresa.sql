@@ -133,8 +133,39 @@ dom_cep AS (
     FROM cep_ordenado
     WHERE rn = 1
 ),
+-- Matriz canônica (B19): a matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição
+-- de matriz), e às vezes há mais de um marcado como matriz no mesmo período. Regra: em cada período vale o
+-- estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo, fica o de menor ordem (0001 primeiro).
+-- A versão de ordem maior que se sobrepõe é descartada inteira.
+-- Desempenho (fase 3, §3.4a): a comparação "existe matriz de ordem menor sobreposta?" roda só com as CHAVES e só
+-- nos CNPJs com mais de uma ordem marcada como matriz (em CNPJ com uma ordem só, nunca há ordem menor). O
+-- resultado é a lista de versões descartadas, que depois sai da tabela larga por um join de igualdade.
+mat_chaves AS (
+    SELECT pk, cnpj_basico, cnpj_ordem, valid_since, valid_until
+    FROM tcc_receita.silver_intermediate.estabelecimentos
+    WHERE identificador_matriz_filial = '1'
+),
+multi_matriz AS (
+    SELECT cnpj_basico
+    FROM mat_chaves
+    GROUP BY cnpj_basico
+    HAVING COUNT(DISTINCT cnpj_ordem) > 1
+),
+matriz_descartada AS (
+    -- Mesma condição de sobreposição de antes (o lado `melhor` sem filtro de datas).
+    SELECT e.pk, e.valid_since
+    FROM mat_chaves e
+    LEFT SEMI JOIN multi_matriz m
+        ON m.cnpj_basico = e.cnpj_basico
+    LEFT SEMI JOIN mat_chaves melhor
+        ON melhor.cnpj_basico = e.cnpj_basico
+       AND melhor.cnpj_ordem < e.cnpj_ordem
+       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
+       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
+),
 est_matriz AS (
     SELECT
+        pk,
         cnpj_basico,
         cnpj_ordem,
         cnpj_dv,
@@ -170,16 +201,10 @@ est_matriz AS (
         valid_since,
         COALESCE(valid_until, '9999-12') AS valid_until
     FROM tcc_receita.silver_intermediate.estabelecimentos e
-    -- A matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição de matriz),
-    -- e às vezes há mais de um marcado como matriz no mesmo período (B19). Regra da matriz canônica:
-    -- em cada período vale o estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo,
-    -- fica o de menor ordem (0001 primeiro). A versão de ordem maior que se sobrepõe é descartada inteira.
-    LEFT ANTI JOIN tcc_receita.silver_intermediate.estabelecimentos melhor
-        ON melhor.cnpj_basico = e.cnpj_basico
-       AND melhor.identificador_matriz_filial = '1'
-       AND melhor.cnpj_ordem < e.cnpj_ordem
-       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
-       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
+    -- Tira as versões descartadas pela regra da matriz canônica (ver matriz_descartada).
+    LEFT ANTI JOIN matriz_descartada d
+        ON d.pk = e.pk
+       AND d.valid_since = e.valid_since
     WHERE e.identificador_matriz_filial = '1'
       AND e.cnpj_basico IS NOT NULL
       AND e.valid_since IS NOT NULL
