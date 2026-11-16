@@ -109,6 +109,53 @@
       ]
     },
     {
+      "name": "ponte_mes",
+      "displayName": "Das aberturas e baixas ao crescimento líquido (último mês)",
+      "queryLines": [
+        "WITH ultimo AS (\n",
+        "    SELECT MAX(mes_referencia) AS mes FROM tcc_receita.gold.fato_indicadores_setoriais_mes\n",
+        "),\n",
+        "grupos AS (\n",
+        "    SELECT\n",
+        "        s.uf,\n",
+        "        s.porte_empresa,\n",
+        "        s.grande_area_cnae,\n",
+        "        SUM(s.qtd_aberturas)         AS aberturas,\n",
+        "        SUM(s.qtd_baixas)            AS baixas,\n",
+        "        SUM(s.qtd_reativacoes)       AS reativacoes,\n",
+        "        SUM(s.qtd_baixas_de_ativas)  AS baixas_de_ativas,\n",
+        "        SUM(s.qtd_entradas_estoque)  AS entradas,\n",
+        "        SUM(s.qtd_saidas_estoque)    AS saidas,\n",
+        "        SUM(s.crescimento_liquido)   AS crescimento\n",
+        "    FROM tcc_receita.gold.fato_indicadores_setoriais_mes s\n",
+        "    JOIN ultimo u ON s.mes_referencia = u.mes\n",
+        "    GROUP BY s.uf, s.porte_empresa, s.grande_area_cnae\n",
+        "),\n",
+        "componentes AS (\n",
+        "    SELECT * FROM VALUES\n",
+        "        (1, 'Aberturas'), (2, '− Baixas'), (3, '+ Reativações (voltaram a ser ativas)'), (4, '+ Baixas de empresas que já não estavam ativas (inclui as que já apareceram baixadas)'),\n",
+        "        (5, '− Aberturas que não entraram como ativas (já apareceram baixadas, inaptas ou suspensas)'), (6, '− Deixaram de estar ativas sem baixa (inaptidão, suspensão)'), (7, '= Crescimento líquido')\n",
+        "    AS t(ordem, componente)\n",
+        ")\n",
+        "SELECT\n",
+        "    g.uf,\n",
+        "    g.porte_empresa,\n",
+        "    g.grande_area_cnae,\n",
+        "    c.componente,\n",
+        "    CASE c.ordem\n",
+        "        WHEN 1 THEN g.aberturas\n",
+        "        WHEN 2 THEN -g.baixas\n",
+        "        WHEN 3 THEN g.reativacoes\n",
+        "        WHEN 4 THEN g.baixas - g.baixas_de_ativas\n",
+        "        WHEN 5 THEN -(g.aberturas - (g.entradas - g.reativacoes))\n",
+        "        WHEN 6 THEN -(g.saidas - g.baixas_de_ativas)\n",
+        "        WHEN 7 THEN g.crescimento\n",
+        "    END AS empresas\n",
+        "FROM grupos g\n",
+        "CROSS JOIN componentes c\n"
+      ]
+    },
+    {
       "name": "estoque_mes",
       "displayName": "Empresas ativas no fim de cada mês",
       "queryLines": [
@@ -412,6 +459,19 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f1_uf_ponte_mes",
+                "query": {
+                  "datasetName": "ponte_mes",
+                  "fields": [
+                    {
+                      "name": "uf",
+                      "expression": "`uf`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -433,6 +493,11 @@
                     "fieldName": "uf",
                     "displayName": "UF",
                     "queryName": "filtro_f1_uf_painel"
+                  },
+                  {
+                    "fieldName": "uf",
+                    "displayName": "UF",
+                    "queryName": "filtro_f1_uf_ponte_mes"
                   }
                 ]
               },
@@ -491,6 +556,19 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f1_porte_ponte_mes",
+                "query": {
+                  "datasetName": "ponte_mes",
+                  "fields": [
+                    {
+                      "name": "porte_empresa",
+                      "expression": "`porte_empresa`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -512,6 +590,11 @@
                     "fieldName": "porte_empresa",
                     "displayName": "Porte",
                     "queryName": "filtro_f1_porte_painel"
+                  },
+                  {
+                    "fieldName": "porte_empresa",
+                    "displayName": "Porte",
+                    "queryName": "filtro_f1_porte_ponte_mes"
                   }
                 ]
               },
@@ -570,6 +653,19 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "filtro_f1_area_ponte_mes",
+                "query": {
+                  "datasetName": "ponte_mes",
+                  "fields": [
+                    {
+                      "name": "grande_area_cnae",
+                      "expression": "`grande_area_cnae`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -591,6 +687,11 @@
                     "fieldName": "grande_area_cnae",
                     "displayName": "Setor (grande área)",
                     "queryName": "filtro_f1_area_painel"
+                  },
+                  {
+                    "fieldName": "grande_area_cnae",
+                    "displayName": "Setor (grande área)",
+                    "queryName": "filtro_f1_area_ponte_mes"
                   }
                 ]
               },
@@ -1190,6 +1291,91 @@
             "x": 6,
             "y": 10,
             "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "p1_ponte_texto",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Por que o crescimento líquido não é aberturas menos baixas?\n",
+                "Leia as barras de cima para baixo, no último mês: some cada linha com o seu sinal e o resultado é o crescimento líquido (última barra). Nem toda abertura entra na lista de ativas (algumas já aparecem baixadas), nem toda baixa sai dela (algumas já não estavam ativas), e há empresas que voltam a ser ativas ou deixam de ser sem baixa. Reage aos filtros desta página.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "b1_ponte",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ponte_mes",
+                  "fields": [
+                    {
+                      "name": "componente",
+                      "expression": "`componente`"
+                    },
+                    {
+                      "name": "sum(empresas)",
+                      "expression": "SUM(`empresas`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(empresas)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Empresas"
+                },
+                "y": {
+                  "fieldName": "componente",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "Aberturas",
+                        "− Baixas",
+                        "+ Reativações (voltaram a ser ativas)",
+                        "+ Baixas de empresas que já não estavam ativas (inclui as que já apareceram baixadas)",
+                        "− Aberturas que não entraram como ativas (já apareceram baixadas, inaptas ou suspensas)",
+                        "− Deixaram de estar ativas sem baixa (inaptidão, suspensão)",
+                        "= Crescimento líquido"
+                      ]
+                    }
+                  },
+                  "displayName": ""
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Das aberturas e baixas ao crescimento líquido, no último mês",
+                "showDescription": true,
+                "description": "Crescimento líquido = empresas que passaram a estar ativas (aberturas e reativações) menos as que deixaram de estar ativas (baixas, inaptidões, suspensões)."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 12,
             "height": 7
           }
         }

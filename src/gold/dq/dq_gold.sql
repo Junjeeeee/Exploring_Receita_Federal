@@ -498,3 +498,55 @@ FROM conferencia c
 CROSS JOIN conferencia_eventos ce
 CROSS JOIN cobertura cob
 CROSS JOIN mercado m;
+
+-- 6. Ponte "aberturas e baixas → crescimento líquido" (quadro da página 1 do dashboard). Por mês da janela, no fato:
+--      aberturas − baixas + reativações + baixas de quem já não estava ativa − aberturas que não entraram como ativas
+--      − saídas que não são baixa = crescimento líquido (entradas − saídas)
+--    com reativações = entrou_estoque_mes AND NOT teve_abertura_mes. O quadro é montado a partir do painel, que
+--    guarda teve_reativacao_mes e qtd_baixas_de_ativas; por isso também se exige, linha a linha agregada:
+--      (i)  entrou AND NOT abertura = teve_reativacao_mes (não há outra forma de entrar nas ativas);
+--      (ii) baixa AND saiu = baixa AND ativa_inicio_mes (toda baixa de quem estava ativa é uma saída).
+--    Base real, ago/2023 (conferência do autor): 397.214 − 200.882 + 38.556 + 36.373 − 10.533 − 2.090 = 258.638.
+WITH params AS (
+    SELECT '{{mes_referencia_inicial}}' AS mes_ini, '{{mes_referencia_final}}' AS mes_fim
+),
+ponte AS (
+    SELECT
+        f.mes_referencia,
+        COUNT_IF(f.teve_abertura_mes) AS aberturas,
+        COUNT_IF(f.teve_baixa_mes) AS baixas,
+        COUNT_IF(f.entrou_estoque_mes AND NOT f.teve_abertura_mes) AS reativacoes,
+        COUNT_IF(f.teve_baixa_mes AND NOT f.saiu_estoque_mes) AS baixas_sem_saida,
+        COUNT_IF(f.teve_abertura_mes AND NOT f.entrou_estoque_mes) AS aberturas_sem_entrada,
+        COUNT_IF(f.saiu_estoque_mes AND NOT f.teve_baixa_mes) AS saidas_sem_baixa,
+        COUNT_IF(f.entrou_estoque_mes) - COUNT_IF(f.saiu_estoque_mes) AS crescimento,
+        COUNT_IF(f.teve_reativacao_mes) AS reativacoes_flag,
+        COUNT_IF(f.teve_baixa_mes AND f.saiu_estoque_mes) AS baixas_com_saida,
+        COUNT_IF(f.teve_baixa_mes AND f.ativa_inicio_mes) AS baixas_de_ativas
+    FROM tcc_receita.gold.fato_empresa_mes f
+    CROSS JOIN params p
+    WHERE f.mes_referencia >= p.mes_ini AND f.mes_referencia <= p.mes_fim
+    GROUP BY f.mes_referencia
+),
+resumo AS (
+    SELECT
+        COUNT_IF(aberturas - baixas + reativacoes + baixas_sem_saida - aberturas_sem_entrada - saidas_sem_baixa
+                 <> crescimento) AS meses_sem_identidade,
+        MIN(CASE WHEN aberturas - baixas + reativacoes + baixas_sem_saida - aberturas_sem_entrada - saidas_sem_baixa
+                      <> crescimento
+                 THEN CONCAT(mes_referencia, ' ', CAST(aberturas AS STRING), ' - ', CAST(baixas AS STRING), ' + ',
+                             CAST(reativacoes AS STRING), ' + ', CAST(baixas_sem_saida AS STRING), ' - ',
+                             CAST(aberturas_sem_entrada AS STRING), ' - ', CAST(saidas_sem_baixa AS STRING),
+                             ' <> ', CAST(crescimento AS STRING)) END) AS exemplo,
+        COUNT_IF(reativacoes <> reativacoes_flag OR baixas_com_saida <> baixas_de_ativas) AS meses_painel_incoerente
+    FROM ponte
+)
+SELECT
+    ASSERT_TRUE(r.meses_sem_identidade = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: ponte aberturas/baixas -> crescimento liquido nao fecha em ',
+               CAST(r.meses_sem_identidade AS STRING), ' mes(es); ex.: ', COALESCE(r.exemplo, '?'))),
+    ASSERT_TRUE(r.meses_painel_incoerente = 0,
+        CONCAT('ERRO DQ [fato_empresa_mes]: em ', CAST(r.meses_painel_incoerente AS STRING),
+               ' mes(es), entradas sem abertura diferem das reativacoes ou baixas com saida diferem das baixas de ativas',
+               ' (o quadro da pagina 1 usaria numeros errados).'))
+FROM resumo r;

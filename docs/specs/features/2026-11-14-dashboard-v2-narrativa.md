@@ -163,6 +163,27 @@ Resultados passam a seguir as 6 perguntas; "idade na baixa" é definição nova 
 4. **Filtro de bairro** no Mercado ativo, em todos os widgets; bairro nulo/vazio vira `NAO INFORMADO` (mesma
    expressão `BAIRRO` nos três datasets). Gold inalterada.
 
+### 2.8 Fase 3 da otimização (2026-11-16)
+
+Spec: [`2026-11-16-otimizacao-log-fato-dashboard.md`](2026-11-16-otimizacao-log-fato-dashboard.md) (§3.5 e §12).
+
+1. **Datasets grandes leem tabelas `gold.dash_*`** gravadas pelo Job (`src/gold/dashboard_agregados.sql`):
+   `fluxos_empresa` ← `dash_fluxos_mes`; `baixas_idade`, `baixas_motivo`, `eventos` ← `dash_*_mes` (somando os meses);
+   `mercado`, `mercado_bairros`, `mercado_empresas` ← `dash_mercado*` (a regra do bairro `NAO INFORMADO` mudou para
+   lá). Números iguais: 126 comparações widget a widget na amostra, 0 diferenças. `eventos`, `baixas_idade` e
+   `baixas_motivo` perderam colunas que nenhum widget usava (`data_referencia`, `categoria_macro_evento`,
+   `entidade_tipo`, `eh_matriz`).
+2. **Quadro "ponte" na página 1** (pedido do autor): por que o crescimento líquido ≠ aberturas − baixas. Dataset
+   `ponte_mes` (painel, último mês, UF × porte × área — reage aos filtros da página) com uma linha por componente e o
+   sinal já aplicado no SQL; barras horizontais `b1_ponte` em ordem fixa (`PONTE`), com a frase de leitura
+   `p1_ponte_texto` acima. Componentes: aberturas; − baixas; + reativações; + baixas de empresas que já não estavam
+   ativas; − aberturas que não entraram como ativas; − deixaram de estar ativas sem baixa; = crescimento líquido.
+   `dq_gold.sql` (bloco 6) garante a identidade no fato por mês e as duas igualdades usadas para montá-la a partir do
+   painel. Amostra, 2023-08 (Brasil): 4.060 − 1.943 + 391 + 372 − 117 − 23 = 2.740 (= crescimento líquido do
+   contador). Base real, ago/2023 (conferência do autor): 397.214 − 200.882 + 38.556 + 36.373 − 10.533 − 2.090 = 258.638.
+   **A conferir na prévia:** se o Lakeview mostra as barras na ordem da lista de cima para baixo (a ordem customizada
+   de cor vai do topo para a base; no eixo de categorias ainda não foi visto).
+
 ## 3. Tarefas
 
 - [x] T1 `fato_empresa_mes.sql`: `idade_na_baixa_meses`, `faixa_idade_baixa`; DQ em `dq_gold.sql`

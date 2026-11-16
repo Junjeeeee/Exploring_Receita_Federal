@@ -46,6 +46,18 @@ ORDEM_PORTE = ["NAO IDENTIFICADO", "NAO INFORMADO", "EPP", "DEMAIS", "ME", "MEI"
 # Faixas de idade: ordem natural (da mais nova para a mais velha), não por volume.
 ORDEM_FAIXA_IDADE = ["00-01 ano", "01-02 anos", "02-05 anos", "05-10 anos", "10+ anos", "sem data"]
 
+# Rótulos do quadro "ponte" da página 1, na ordem de leitura (de cima para baixo). O sinal no texto é o mesmo que o
+# dataset aplica ao número; a última linha é o resultado (soma das seis de cima).
+PONTE = [
+    "Aberturas",
+    "− Baixas",
+    "+ Reativações (voltaram a ser ativas)",
+    "+ Baixas de empresas que já não estavam ativas (inclui as que já apareceram baixadas)",
+    "− Aberturas que não entraram como ativas (já apareceram baixadas, inaptas ou suspensas)",
+    "− Deixaram de estar ativas sem baixa (inaptidão, suspensão)",
+    "= Crescimento líquido",
+]
+
 # Piso de volume dos rankings: grupo com média mensal de ativas no início do mês abaixo disso não é ranqueado
 # (taxa de grupo pequeno é ruído). Na base real todas as UFs e grandes áreas passam.
 PISO_ATIVAS = 100
@@ -163,6 +175,57 @@ SELECT
     ROUND(SUM(aberturas_ultimo_mes)   / NULLIF(SUM(baixas_ultimo_mes), 0), 2)   AS aberturas_por_baixa_ultimo_mes,
     ROUND(SUM(aberturas_mes_anterior) / NULLIF(SUM(baixas_mes_anterior), 0), 2) AS aberturas_por_baixa_mes_anterior
 FROM resumo
+"""),
+    # Quadro "ponte" (pedido do autor, fase 3 T-B5): por que o crescimento líquido não é aberturas − baixas. Último
+    # mês, por UF × porte × área (reage aos filtros da página). Cada componente já sai com o SINAL calculado aqui
+    # (o widget só soma; expressão composta no campo do widget não funciona no Lakeview). Identidade, linha a linha:
+    #   aberturas − baixas + reativações + baixas de quem já não estava ativa − aberturas que não entraram como ativas
+    #   − saídas que não são baixa = crescimento líquido (= entradas − saídas)
+    # Montada do painel: reativações = qtd_reativacoes (= entrou sem abertura; o dq_gold, bloco 6, garante);
+    # baixas que tiraram das ativas = qtd_baixas_de_ativas (= baixa com saída; idem); aberturas que entraram como
+    # ativas = entradas − reativações.
+    "ponte_mes": ("Das aberturas e baixas ao crescimento líquido (último mês)", f"""
+WITH ultimo AS (
+    SELECT MAX(mes_referencia) AS mes FROM {PAINEL}
+),
+grupos AS (
+    SELECT
+        s.uf,
+        s.porte_empresa,
+        s.grande_area_cnae,
+        SUM(s.qtd_aberturas)         AS aberturas,
+        SUM(s.qtd_baixas)            AS baixas,
+        SUM(s.qtd_reativacoes)       AS reativacoes,
+        SUM(s.qtd_baixas_de_ativas)  AS baixas_de_ativas,
+        SUM(s.qtd_entradas_estoque)  AS entradas,
+        SUM(s.qtd_saidas_estoque)    AS saidas,
+        SUM(s.crescimento_liquido)   AS crescimento
+    FROM {PAINEL} s
+    JOIN ultimo u ON s.mes_referencia = u.mes
+    GROUP BY s.uf, s.porte_empresa, s.grande_area_cnae
+),
+componentes AS (
+    SELECT * FROM VALUES
+        (1, '{PONTE[0]}'), (2, '{PONTE[1]}'), (3, '{PONTE[2]}'), (4, '{PONTE[3]}'),
+        (5, '{PONTE[4]}'), (6, '{PONTE[5]}'), (7, '{PONTE[6]}')
+    AS t(ordem, componente)
+)
+SELECT
+    g.uf,
+    g.porte_empresa,
+    g.grande_area_cnae,
+    c.componente,
+    CASE c.ordem
+        WHEN 1 THEN g.aberturas
+        WHEN 2 THEN -g.baixas
+        WHEN 3 THEN g.reativacoes
+        WHEN 4 THEN g.baixas - g.baixas_de_ativas
+        WHEN 5 THEN -(g.aberturas - (g.entradas - g.reativacoes))
+        WHEN 6 THEN -(g.saidas - g.baixas_de_ativas)
+        WHEN 7 THEN g.crescimento
+    END AS empresas
+FROM grupos g
+CROSS JOIN componentes c
 """),
     # Estoque inclui o baseline: é o ponto de partida da série (só fluxo é que não existe nele).
     "estoque_mes": ("Empresas ativas no fim de cada mês", f"""
@@ -293,6 +356,7 @@ COLUNAS = {
                    "aberturas_ultimo_mes", "aberturas_delta", "baixas_ultimo_mes", "baixas_mes_anterior",
                    "aberturas_mes_anterior", "baixas_delta", "saldo_ultimo_mes", "saldo_delta"],
     "ultimo_mes": ["mes_dos_contadores", "comparado_com"],
+    "ponte_mes": ["uf", "porte_empresa", "grande_area_cnae", "componente", "empresas"],
     "aberturas_por_baixa": ["aberturas_por_baixa_ultimo_mes", "aberturas_por_baixa_mes_anterior"],
     "estoque_mes": ["mes_referencia", "data_referencia", "uf", "porte_empresa", "grande_area_cnae",
                     "estoque_final_ativas"],
@@ -464,7 +528,7 @@ DEF_ABRE_FECHA = ("Inclui empresas que abriram e foram baixadas antes de aparece
                   "abertura e como baixa no mesmo mês.")
 
 # 1. Resumo -------------------------------------------------------------------------------------
-P1 = ["resumo_mes", "estoque_mes", "painel"]
+P1 = ["resumo_mes", "estoque_mes", "painel", "ponte_mes"]
 PAGINA_RESUMO = [
     (abertura("p1_texto", "O número de empresas ativas está crescendo?",
               "Os números grandes são do **último mês disponível** (indicado ao lado); embaixo de cada um, a variação "
@@ -506,6 +570,18 @@ PAGINA_RESUMO = [
         (soma("qtd_saidas_estoque"), "Deixaram de estar ativas (baixas, inaptidões, suspensões)"),
     ], descricao="Por mês em que a mudança apareceu no cadastro. A distância entre as linhas é o crescimento "
                  "líquido do mês."), pos(6, 10, 6, 7)),
+
+    # Quadro "ponte" (fase 3, T-B5): frase de leitura acima, barras com o sinal já aplicado no dataset.
+    (texto("p1_ponte_texto", [
+        "### Por que o crescimento líquido não é aberturas menos baixas?",
+        "Leia as barras de cima para baixo, no último mês: some cada linha com o seu sinal e o resultado é o "
+        "crescimento líquido (última barra). Nem toda abertura entra na lista de ativas (algumas já aparecem "
+        "baixadas), nem toda baixa sai dela (algumas já não estavam ativas), e há empresas que voltam a ser ativas "
+        "ou deixam de ser sem baixa. Reage aos filtros desta página.",
+    ]), pos(0, 17, 12, 2)),
+    (barras("b1_ponte", "Das aberturas e baixas ao crescimento líquido, no último mês", "ponte_mes",
+            coluna("componente"), soma("empresas"), ("", "Empresas"), horizontal=True, ordem_categoria=PONTE,
+            descricao=DEF_CRESC), pos(0, 19, 12, 7)),
 ]
 
 # 2. Quem ---------------------------------------------------------------------------------------
