@@ -40,6 +40,14 @@ descontinuas AS (
         FROM tcc_receita.silver_intermediate.socios
     ) WHERE valid_until IS DISTINCT FROM prox_since
 ),
+-- Unicidade de (pk, valid_since): no máximo uma versão por pk e mês de início (premissa do MERGE da fase 2).
+chaves_repetidas AS (
+    SELECT COUNT(*) AS qtd
+    FROM (
+        SELECT pk, valid_since FROM tcc_receita.silver_intermediate.socios
+        GROUP BY pk, valid_since HAVING COUNT(*) > 1
+    )
+),
 -- Saídas em massa: por mês, versões que viram inativas / vínculos ativos no mês anterior (limite 5%).
 -- Versão simples: conta pelo valid_since da versão inativa; "ativos no mês anterior" = versões ativas
 -- cuja vigência [valid_since, valid_until) cobre o mês anterior. LEFT JOIN: mês com saídas e zero ativos também falha.
@@ -75,10 +83,12 @@ SELECT
     ASSERT_TRUE(sc.qtd = 0, CONCAT('ERRO DQ [socios]: ', sc.qtd, ' PKs sem exatamente uma versão corrente!')),
     ASSERT_TRUE(pi.qtd = 0, CONCAT('ERRO DQ [socios]: ', pi.qtd, ' PKs cuja primeira versão é inativa (versão fantasma)!')),
     ASSERT_TRUE(dc.qtd = 0, CONCAT('ERRO DQ [socios]: ', dc.qtd, ' versões com valid_until diferente do valid_since da próxima!')),
+    ASSERT_TRUE(cr.qtd = 0, CONCAT('ERRO DQ [socios]: ', CAST(cr.qtd AS STRING), ' pares (pk, valid_since) repetidos!')),
     ASSERT_TRUE(se.qtd = 0, CONCAT('ERRO DQ [socios]: ', se.qtd, ' meses com saídas > 5% dos vínculos ativos do mês anterior (ex.: ', se.exemplo, ')!'))
 FROM metricas m
 CROSS JOIN duplicadas_ativas d
 CROSS JOIN sem_corrente sc
 CROSS JOIN primeira_inativa pi
 CROSS JOIN descontinuas dc
+CROSS JOIN chaves_repetidas cr
 CROSS JOIN saidas_excessivas se;
