@@ -1,6 +1,7 @@
 # Feature: otimização da ingestão bronze (fase 1b)
 
-**Status:** rascunho (só desenho; nenhum código alterado)
+**Status:** P1, P2 e P3 **preparadas, não executadas no Databricks** (§9; roteiro de medida na §10). P4–P6 só desenho.
+As linhas de código citadas nas §2–§3 referem-se ao commit `ef09865` (antes de P1–P3).
 **Camadas afetadas:** bronze (e o Job em `src/jobs/`)
 **Branch:** `worktree-otimizacao`
 **Spec guarda-chuva:** [`2026-11-16-otimizacao-pipeline.md`](2026-11-16-otimizacao-pipeline.md) (fase 1b; princípios §2, cluster §3.3)
@@ -283,15 +284,23 @@ schema (`DESCRIBE`) e `numOutputRows` do `DESCRIBE HISTORY` das duas escritas.
 - [ ] T1. Parâmetro de schema de destino na bronze (padrão `bronze`), para gravar em `bronze_teste` sem tocar a real.
 - [ ] T2. Script de validação (impressão digital + `EXCEPT ALL` sob demanda) em `scripts/`, uma passada por tabela.
 - [ ] T3. Medir Q1 localmente (DuckDB nos rodapés da landing × `COUNT(*)` da bronze no warehouse).
-- [ ] T4. P1: remover a ação de `bronze_lib.py:199`; contagem de pks repetidas na DQ, lendo só `pk`.
-- [ ] T5. P2: optimized write desligado só na escrita bronze; descobrir a forma que funciona no DBR 15.4 (opção do writer
+- [x] T4. P1: remover a ação de `bronze_lib.py:199`; contagem de pks repetidas na DQ, lendo só `pk`.
+      **Preparado, não executado no Databricks** (§9.1).
+- [x] T5. P2: optimized write desligado só na escrita bronze; descobrir a forma que funciona no DBR 15.4 (opção do writer
       ou conf de sessão) e se a conf vaza entre tarefas; `advisoryPartitionSizeInBytes` se os arquivos ficarem pequenos.
-- [ ] T6. P3: DQ em uma passada, volumetria em ordem, mesmo texto de erro; teste de queda forçada.
+      **Preparado (atrás de parâmetro, padrão = comportamento atual), não executado** (§9.2). Documentação consultada;
+      qual modo funciona e o vazamento entre tasks ficam para a medida (§10). `advisoryPartitionSizeInBytes` não
+      implementado: só se Q6 mostrar arquivos pequenos.
+- [x] T6. P3: DQ em uma passada, volumetria em ordem, mesmo texto de erro; teste de queda forçada.
+      **Preparado, não executado no Databricks** (§9.3). Queda forçada coberta por teste puro local
+      (`tests/test_bronze_otimizacao.py`); a versão no cluster está no roteiro (§10, passo 6).
 - [ ] T7. Execução de medida (§4.2 item 2) e registro em `docs/medicoes/` (tempo, shuffle, arquivos, custo).
 - [ ] T8. Decidir P4 e P5 com os números de T3/T7; se seguir, spec curta de complemento e nova medida.
 - [ ] T9. Medir a linha do tempo de workers na bronze (Q4) junto com o piloto da §3.3 da guarda-chuva.
 - [ ] T10. Atualizar `docs/specs/bronze.md` (está desatualizada: diz que pk repetida com hash diferente dá `ValueError`, e as
       linhas citadas mudaram), `docs/backlog.md` (B17) e, se houver decisão, `docs/decisions.md`. Commits separados.
+      **Parcial:** `docs/specs/bronze.md` atualizada (P1–P3, `aplicar_comentarios_uc` só aplica diferenças, CLI de DQ
+      não está mais quebrada, sem números de linha). `backlog.md`/`decisions.md` ficam para depois da medida.
 
 ## 6. Critérios de aceite
 
@@ -325,3 +334,158 @@ schema (`DESCRIBE`) e `numOutputRows` do `DESCRIBE HISTORY` das duas escritas.
 ## 8. Notas de execução
 
 (vazio — nada executado)
+
+## 9. Implementação de P1–P3 (preparada, não executada no Databricks)
+
+Commits na branch `worktree-otimizacao`, um por proposta. Verificação local: `py_compile` dos arquivos alterados e
+`tests/test_bronze_otimizacao.py` (puro, sem Spark). Nada foi rodado em cluster, Job ou warehouse.
+
+### 9.1 P1 — contagem de pks repetidas fora da ingestão
+
+- `_remover_copias_exatas` (`bronze_lib.py`) passou a ser só `df.dropDuplicates()`: sem a ação
+  `groupBy("pk").count().filter(...).count()`, cada mês da ingestão tem **uma** ação (a escrita). O `dropDuplicates` fica.
+- A contagem virou aviso (não falha) da DQ: por mês da execução, nº de `pk` com mais de uma linha na tabela gravada,
+  impresso como `⚠️ <n> PK(s) repetidas com conteúdo divergente em <tabela> (<mês>) (mantidas; a Silver desempata).`
+  (o texto antigo, com o mês acrescentado). O número é o mesmo da ingestão: a tabela gravada é o resultado deduplicado.
+  Depois da P3 ela sai da mesma agregação da DQ (§9.3), sem leitura extra.
+
+### 9.2 P2 — optimized write desligável só na escrita mensal
+
+**O que a documentação diz (consultada em 2026-11-16):**
+
+| Mecanismo | Fonte | O que garante | O que não garante |
+|---|---|---|---|
+| Conf de sessão `spark.databricks.delta.optimizeWrite.enabled=false` | Databricks, *Control data file size* ([docs.databricks.com/aws/en/delta/tune-file-size](https://docs.databricks.com/aws/en/delta/tune-file-size)): "`false` … Can be set at the session level to override optimized writes for all tables modified in the workload." | Vale no Databricks e vence a propriedade de tabela. | Isolamento entre tasks: *Set Spark configuration properties* ([docs.databricks.com/aws/en/spark/conf](https://docs.databricks.com/aws/en/spark/conf)) diz que o que se define num **notebook** vale "only the SparkSession for the current notebook", mas não fala de `spark_python_task` num job cluster compartilhado. |
+| Opção do writer `.option("optimizeWrite", "false")` | Delta Lake open source ≥ 3.1 ([docs.delta.io/latest/optimizations-oss.html](https://docs.delta.io/latest/optimizations-oss.html)): precedência, de menor para maior, "table property → SQL configuration → DataFrameWriter option `optimizeWrite`". | A forma mais local (uma escrita). | A documentação do Databricks não a menciona; o DBR usa o Delta próprio. Opção desconhecida é ignorada em silêncio pelo DataFrameWriter: se o DBR 15.4 não a reconhecer, nada quebra, só não há ganho. |
+| Propriedade de tabela `delta.autoOptimize.optimizeWrite=false` | Databricks, mesma página | — | Precedência contra a conf de sessão do cluster (`true`) não documentada no Databricks (R12/D8); pela regra do Delta OSS a conf de sessão **vence** a propriedade, então ela provavelmente não serviria. Descartada. |
+
+Também da mesma página do Databricks: "In Databricks Runtime 13.3 LTS and above, all tables registered in Unity Catalog
+have optimized writes enabled for CTAS statements and INSERT operations for partitioned tables." — mais um motivo para
+desligar explicitamente, e não só tirar a conf do cluster.
+
+**Escolha:** parâmetro `modo_optimize_write` de `ingerir_tabela_bronze` (ou variável de ambiente
+`BRONZE_DESLIGAR_OPTIMIZE_WRITE`, lida só pela bronze; `src/bronze/optimize_write.py`), aplicado **só** às escritas
+mensais:
+- `nao` — **padrão**, comportamento atual (vale a conf do cluster);
+- `writer` — opção `optimizeWrite=false` no DataFrameWriter da escrita mensal (preferida: não toca a sessão);
+- `sessao` — conf de sessão `false` só durante o `saveAsTable`, restaurando o valor anterior num `finally`.
+
+**Grau de certeza:** nenhuma fonte oficial garante, para DBR 15.4 em `spark_python_task`, que a opção do writer é
+respeitada **nem** que a conf de sessão fica isolada da task vizinha. Por isso o padrão é `nao` (preserva o comportamento).
+A medida da §10 decide; se `writer` funcionar, ligar por padrão (mudar `MODO_PADRAO` ou definir a variável no
+`spark_env_vars` do cluster em `gerar_job.py`). O risco de vazamento no modo `sessao` é só de *layout* de arquivos em
+outra task que escreva no mesmo instante (não muda linhas); ainda assim, só usar `sessao` se `writer` não funcionar.
+A conf global do cluster (`gerar_job.py`) e o YAML do Job **não** mudaram.
+
+### 9.3 P3 — DQ em uma passada por tabela
+
+`testar_tabela_bronze` faz **uma** agregação sobre os meses da execução (`filter(mes_referencia IN meses)`, lendo
+`mes_referencia`, `change_hash` e `pk`): `groupBy(mes, pk)` → linhas e hashes nulos por pk; depois soma por mês. Mais
+uma leitura do `dq_metrics_log` (última linha por mês da tabela). A avaliação continua **mês a mês, em ordem**, e dentro
+do mês na mesma ordem de antes. `validar_volumetria` foi dividida em `ler_historico_volumetria`,
+`media_volumetria_anterior` (pura), `checar_volumetria` (pura) e `registrar_volumetria`.
+
+| # | Asserção | Antes (laço por mês) | Agora | Mensagem |
+|---|---|---|---|---|
+| 1 | `colunas_esperadas` presentes | por mês, sobre o schema da tabela | uma vez, antes do laço, com o rótulo do 1º mês (onde a antiga falhava; o schema é o mesmo em todos os meses) | igual: `❌ Colunas ausentes em <tabela> (<mês>): <faltantes>` |
+| 2 | Contrato `validar_schema` | por mês, `df_mes.select(colunas)` | uma vez, `df_tabela.select(colunas)` (só metadados) | igual; o `✓ Schema validado` sai 1× em vez de N× |
+| 3 | Mês vazio | `df_mes.count() == 0` | `linhas` = soma das contagens por (mês, pk); mês ausente da agregação = 0 | igual: `🚨 FALHA: O arquivo de <t> no mês <m> está vazio.` |
+| 4 | Queda volumétrica | consulta ao log por mês (`mes < '<m>'`, última linha por mês, top 3 desc, `AVG`) depois do `INSERT` do mês anterior | histórico lido 1×; cada mês aprovado entra nele em memória antes do seguinte; mesma regra de média (testada contra uma reprodução da consulta antiga) | igual: `🚨 ANOMALIA VOLUMÉTRICA em <t>!…` |
+| 5 | (efeito) `INSERT` no log | por mês, depois da volumetria | **igual, por mês, no mesmo ponto** (não adotei o `INSERT` único da proposta: mudaria o que fica no log quando um mês falha) | — |
+| 6 | `change_hash` nulo | `sum(when(hash nulo))` por mês | soma, por mês, dos nulos contados por (mês, pk) | igual: `❌ <n> registos com change_hash nulo em <t> (<m>)!` |
+| 7 | PK nula/vazia (se a config tem pk) | `sum(when(pk nula ou trim(pk) = ''))` por mês | soma das linhas dos grupos cuja pk é nula ou vazia | igual: `❌ <n> registos com PK nula/vazia em <t> (<m>)!` |
+| 8 | Aviso de pks repetidas (P1, não falha) | ingestão, `groupBy(pk)` sobre o resultado deduplicado | nº de grupos (mês, pk) com mais de uma linha | texto antigo + `(<mês>)` |
+
+**Asserções que não entraram na passada única:** nenhuma de dados. As de schema (1, 2) não leem dados e passaram a
+rodar uma vez. O `INSERT` do log (5) ficou por mês por escolha, para não mudar o efeito colateral.
+
+**Diferenças de comportamento (só desempenho/efeito idempotente):** o `CREATE TABLE IF NOT EXISTS` do log roda uma vez,
+antes do 1º mês (antes: depois da checagem de vazio do 1º mês); a agregação lê todos os meses antes de avaliar o 1º,
+então um mês 1 com erro não poupa a leitura dos demais. A agregação por (mês, pk) embaralha a coluna `pk` (estreita) —
+é o custo da contagem da P1, agora dentro da DQ (§3, P1).
+
+## 10. Roteiro da execução de medida (para o usuário rodar; uma subida de cluster, ~30–45 min)
+
+Substitui a tabela `bronze_teste` (T1, não implementada) por *time travel* do Delta na própria bronze: cada execução
+regrava a mesma partição `2023-08` com o mesmo conteúdo (só `bronze_processed_at` muda), e as versões anteriores ficam
+consultáveis com `VERSION AS OF`. Aceitável em desenvolvimento (D-08). Não rodar a silver no meio.
+
+**Preparação**
+1. Dar `push` da branch `worktree-otimizacao`. No workspace, dois *Git folders* do repo: `receita_antes` no commit
+   `ef09865` (código antes de P1–P3) e `receita_depois` na branch `worktree-otimizacao`.
+2. Cluster *all-purpose* com a mesma configuração do `CLUSTER` de `gerar_job.py` (DBR 15.4, `r5d.xlarge`, mesma
+   `spark_conf`, incluindo `optimizeWrite.enabled=true`, `cluster_log_conf` no Volume), mas **`num_workers: 4` fixo**
+   (sem autoscale) e `AWS_BUCKET_NAME` no ambiente. Desligar ao final.
+3. Um notebook por pasta (ou um só, com `dbutils.library.restartPython()` ao trocar de pasta). Início de cada notebook:
+   ```python
+   import sys, time
+   RAIZ = "/Workspace/Users/<você>/receita_antes"   # ou receita_depois
+   sys.path.insert(0, RAIZ)
+   from src.bronze.bronze_lib import ingerir_tabela_bronze, testar_tabela_bronze
+   from src.bronze.configs.estabelecimentos import CONFIG as ESTAB
+   from src.bronze.configs.empresas import CONFIG as EMPR
+   sc = spark.sparkContext
+
+   def versao(t):
+       return spark.sql(f"DESCRIBE HISTORY tcc_receita.bronze.{t} LIMIT 1").first()["version"]
+
+   def medir(grupo, fn, *args, **kw):
+       sc.setJobGroup(grupo, grupo)
+       t0 = time.time(); fn(*args, **kw); dt = time.time() - t0
+       jobs = sc.statusTracker().getJobIdsForGroup(grupo)
+       print(f"{grupo}: {dt:,.0f} s, {len(jobs)} jobs Spark")
+   ```
+
+**Passos**
+1. `v0 = versao("estabelecimentos")` (versão atual, gravada pelo código antigo no run de 11-08).
+2. **(a) código antigo** (`receita_antes`): `medir("a_estab_antigo", ingerir_tabela_bronze, spark, ESTAB, "2023-08", "2023-08")`;
+   `va = versao("estabelecimentos")`. Esperado: 2+ jobs de dados no mês (contagem + escrita).
+3. **(b) P1+P2 `writer`** (`receita_depois`):
+   `medir("b_estab_writer", ingerir_tabela_bronze, spark, ESTAB, "2023-08", "2023-08", modo_optimize_write="writer")`;
+   `vb = versao(...)`. Na Spark UI (aba SQL, consulta do `saveAsTable` do grupo `b_estab_writer`): se ainda houver o
+   estágio/`Exchange` do optimized write antes da escrita (compare com o plano do grupo `a_estab_antigo`), a opção foi
+   ignorada → rodar **(b')** igual com `modo_optimize_write="sessao"` e, depois,
+   `spark.conf.get("spark.databricks.delta.optimizeWrite.enabled")` tem de voltar a `"true"` (restauração).
+4. **(c) empresas** com o modo que funcionou: `medir("c_empr", ingerir_tabela_bronze, spark, EMPR, "2023-08", "2023-08", modo_optimize_write=<modo>)`
+   (tabela estreita; comparar shuffle com o B17: ~7 GB/mês antes).
+5. **(d) DQ antiga × nova** sobre a mesma bronze, 4 meses de estabelecimentos:
+   `medir("d_dq_antiga", testar_tabela_bronze, spark, ESTAB, "2023-05", "2023-08")` em `receita_antes` e
+   `medir("d_dq_nova", ...)` em `receita_depois`. As linhas `📊 Volumetria atual` e as médias impressas têm de ser
+   iguais mês a mês; o aviso de pks repetidas da nova deve bater com o que a ingestão antiga imprimiu em (a) para 2023-08.
+   As duas inserem 4 linhas no `dq_metrics_log` (inócuo: vale a mais recente, com a mesma contagem).
+6. **Queda forçada** (dos dois lados): `from dataclasses import replace`;
+   `testar_tabela_bronze(spark, replace(ESTAB, limite_queda_volumetria=-1.0), "2023-05", "2023-08")` — limite negativo faz
+   o mínimo virar 2× a média, então o 1º mês com histórico tem de falhar. A antiga e a nova têm de falhar **no mesmo
+   mês com a mesma mensagem**.
+7. **Q3 (vazamento de conf), opcional e barato:** num notebook A no cluster, `spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "false")`;
+   num notebook B anexado ao mesmo cluster, `spark.conf.get(...)` deve continuar `"true"`. Isso testa notebooks; para
+   `spark_python_task` a resposta só vem do Job (motivo para preferir `writer`).
+
+**Impressão digital por mês** (em SQL no mesmo cluster; os três resultados têm de ser idênticos):
+```sql
+SELECT 'v0' AS versao, COUNT(*) AS linhas,
+       SUM(CAST(XXHASH64(pk, change_hash, source_reference) AS DECIMAL(38,0))) AS digital
+FROM tcc_receita.bronze.estabelecimentos VERSION AS OF <v0> WHERE mes_referencia = '2023-08'
+UNION ALL
+SELECT 'a', COUNT(*), SUM(CAST(XXHASH64(pk, change_hash, source_reference) AS DECIMAL(38,0)))
+FROM tcc_receita.bronze.estabelecimentos VERSION AS OF <va> WHERE mes_referencia = '2023-08'
+UNION ALL
+SELECT 'b', COUNT(*), SUM(CAST(XXHASH64(pk, change_hash, source_reference) AS DECIMAL(38,0)))
+FROM tcc_receita.bronze.estabelecimentos VERSION AS OF <vb> WHERE mes_referencia = '2023-08';
+-- T0 na versão nova:
+SELECT COUNT(*) = COUNT(DISTINCT pk, change_hash) AS t0_ok
+FROM tcc_receita.bronze.estabelecimentos VERSION AS OF <vb> WHERE mes_referencia = '2023-08';
+```
+Se a digital divergir: `EXCEPT ALL` da §4.1 entre `VERSION AS OF <va>` e `<vb>`, nos dois sentidos. Idem para empresas.
+
+**O que olhar e anotar (em `docs/medicoes/`)**
+- Tempo de parede impresso por `medir` para a, b (b'), c, d_antiga, d_nova; nº de jobs Spark por grupo (esperado: a
+  ingestão nova com **1** job de dados por mês, fora pequenos jobs de metadados).
+- Spark UI → Stages, filtrando pelo grupo: soma de *Shuffle Write* (esperado: de ~3 para ~1 shuffle de linha inteira) e
+  *Total Time Across All Tasks* (CPU dos executores). O event log no Volume `/Volumes/tcc_receita/ops/cluster_logs/<cluster-id>/`
+  traz o mesmo (eventos `SparkListenerTaskEnd`: *Executor Run Time*, *Shuffle Bytes Written*), para guardar.
+- `DESCRIBE HISTORY tcc_receita.bronze.estabelecimentos` nas versões `va` e `vb`: `operationMetrics.numFiles`,
+  `numOutputBytes`, `numOutputRows` (mesmas linhas; mais arquivos e tamanho médio ≥ ~64 MB — Q6).
+- Critérios da §6: tempo de (b) ≥ 40% menor que (a); digital idêntica; T0; DQ igual.
+
+**Depois:** com o modo vencedor, ligar por padrão (§9.2), registrar Q3/Q6 nesta spec e B17 no backlog.
