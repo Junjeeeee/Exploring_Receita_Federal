@@ -190,29 +190,44 @@ ev_cnae_secundario AS (
 -- =====================================================================================================
 -- EMPRESA NASCEU: primeira aparição da MATRIZ CANÔNICA do CNPJ raiz (mesma regra da dim_empresa).
 -- =====================================================================================================
+-- Desempenho (spec §3.1, Ideia 3): só pode nascer na janela um CNPJ que tenha alguma versão de MATRIZ
+-- começando na janela (depois do baseline) — e essas versões já estão em est_janela. A regra da matriz
+-- canônica roda só para esses candidatos, em vez de comparar todas as matrizes do histórico entre si.
+candidatos_nascimento AS (
+    SELECT DISTINCT cnpj_basico
+    FROM est_janela
+    WHERE identificador_matriz_filial = '1'
+      AND cnpj_basico IS NOT NULL
+),
+-- Histórico COMPLETO de matriz dos candidatos (sem filtro de datas), só com as colunas estreitas que a regra usa.
+hist_matriz AS (
+    SELECT e.pk, e.cnpj_basico, e.cnpj_ordem, e.data_inicio_atividade, e.valid_since, e.valid_until
+    FROM tcc_receita.silver_intermediate.estabelecimentos e
+    LEFT SEMI JOIN candidatos_nascimento c
+        ON c.cnpj_basico = e.cnpj_basico
+    WHERE e.identificador_matriz_filial = '1'
+),
 -- Matriz canônica (mesma regra da CTE est_matriz da dim_empresa): em cada período, o estabelecimento marcado
 -- como matriz; havendo mais de um ao mesmo tempo, o de menor ordem (B19).
 matriz_canonica AS (
     SELECT
-        cnpj_basico,
-        pk,
-        data_inicio_atividade,
-        valid_since
-    FROM tcc_receita.silver_intermediate.estabelecimentos e
+        h.cnpj_basico,
+        h.pk,
+        h.data_inicio_atividade,
+        h.valid_since
+    FROM hist_matriz h
     -- A matriz pode mudar de estabelecimento ao longo do tempo (a Receita transfere a condição de matriz),
     -- e às vezes há mais de um marcado como matriz no mesmo período (B19). Regra da matriz canônica:
     -- em cada período vale o estabelecimento marcado como matriz; havendo mais de um ao mesmo tempo,
     -- fica o de menor ordem (0001 primeiro). A versão de ordem maior que se sobrepõe é descartada inteira.
-    LEFT ANTI JOIN tcc_receita.silver_intermediate.estabelecimentos melhor
-        ON melhor.cnpj_basico = e.cnpj_basico
-       AND melhor.identificador_matriz_filial = '1'
-       AND melhor.cnpj_ordem < e.cnpj_ordem
-       AND melhor.valid_since < COALESCE(e.valid_until, '9999-12')
-       AND COALESCE(melhor.valid_until, '9999-12') > e.valid_since
-    WHERE e.identificador_matriz_filial = '1'
-      AND e.cnpj_basico IS NOT NULL
-      AND e.valid_since IS NOT NULL
-      AND e.valid_since < COALESCE(e.valid_until, '9999-12')
+    -- O lado `melhor` continua sem filtro de datas (igual à regra sobre a tabela inteira).
+    LEFT ANTI JOIN hist_matriz melhor
+        ON melhor.cnpj_basico = h.cnpj_basico
+       AND melhor.cnpj_ordem < h.cnpj_ordem
+       AND melhor.valid_since < COALESCE(h.valid_until, '9999-12')
+       AND COALESCE(melhor.valid_until, '9999-12') > h.valid_since
+    WHERE h.valid_since IS NOT NULL
+      AND h.valid_since < COALESCE(h.valid_until, '9999-12')
 ),
 -- Primeira versão da matriz canônica de cada CNPJ raiz (desempate por pk só por determinismo).
 primeira_versao_matriz AS (
@@ -221,11 +236,14 @@ primeira_versao_matriz AS (
     QUALIFY ROW_NUMBER() OVER (PARTITION BY cnpj_basico ORDER BY valid_since, pk) = 1
 ),
 -- Uma pk de empresa por CNPJ raiz (a pk vem da tabela empresas; nunca é montada a partir do CNPJ).
+-- Só para os candidatos, não para a tabela empresas inteira.
 pk_empresa AS (
-    SELECT cnpj_basico, MIN(pk) AS pk
-    FROM tcc_receita.silver_intermediate.empresas
-    WHERE cnpj_basico IS NOT NULL
-    GROUP BY cnpj_basico
+    SELECT emp.cnpj_basico, MIN(emp.pk) AS pk
+    FROM tcc_receita.silver_intermediate.empresas emp
+    LEFT SEMI JOIN primeira_versao_matriz mat
+        ON mat.cnpj_basico = emp.cnpj_basico
+    WHERE emp.cnpj_basico IS NOT NULL
+    GROUP BY emp.cnpj_basico
 ),
 -- 4. Nascimento: primeira aparição da matriz depois do baseline, detectada na janela.
 --    Empresa sem cadastro em `empresas` fica de fora (INNER JOIN): não há pk de empresa para ela.
