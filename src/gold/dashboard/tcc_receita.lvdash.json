@@ -149,34 +149,27 @@
       "displayName": "Aberturas e baixas, uma linha por empresa e tipo",
       "queryLines": [
         "SELECT\n",
-        "    f.mes_referencia,\n",
-        "    f.data_referencia,\n",
-        "    f.uf,\n",
-        "    f.porte_empresa,\n",
-        "    f.grande_area_cnae,\n",
-        "    t.fluxo,\n",
-        "    1 AS qtd,\n",
-        "    CASE WHEN t.fluxo = 'Aberturas' THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,\n",
-        "    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,\n",
-        "    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,\n",
-        "    -- Idade na baixa pela data real (data da baixa − início de atividade); NULL = sem data, fora da mediana.\n",
-        "    CASE WHEN t.fluxo = 'Baixas'    THEN f.idade_na_baixa_meses / 12.0 END AS idade_baixa_anos,\n",
-        "    CASE WHEN t.fluxo = 'Baixas' AND f.idade_na_baixa_meses IS NOT NULL\n",
-        "         THEN IF(f.idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos\n",
-        "FROM tcc_receita.gold.fato_empresa_mes f\n",
-        "JOIN (SELECT 'Aberturas' AS fluxo UNION ALL SELECT 'Baixas') t\n",
-        "  ON (t.fluxo = 'Aberturas' AND f.teve_abertura_mes) OR (t.fluxo = 'Baixas' AND f.teve_baixa_mes)\n",
-        "WHERE mes_referencia > (SELECT MIN(mes_referencia) FROM tcc_receita.gold.fato_empresa_mes)\n",
-        "  AND (f.teve_abertura_mes OR f.teve_baixa_mes)\n"
+        "    mes_referencia,\n",
+        "    data_referencia,\n",
+        "    uf,\n",
+        "    porte_empresa,\n",
+        "    grande_area_cnae,\n",
+        "    fluxo,\n",
+        "    qtd,\n",
+        "    pct_mei_abertura,\n",
+        "    pct_mei_baixa,\n",
+        "    pct_falencia_baixa,\n",
+        "    idade_baixa_anos,\n",
+        "    pct_baixa_menos_2_anos\n",
+        "FROM tcc_receita.gold.dash_fluxos_mes\n"
       ]
     },
     {
       "name": "baixas_idade",
       "displayName": "Baixas por faixa de idade na baixa",
       "queryLines": [
-        "SELECT data_referencia, uf, porte_empresa, grande_area_cnae, faixa_idade_baixa, COUNT(*) AS qtd_baixas\n",
-        "FROM tcc_receita.gold.fato_empresa_mes\n",
-        "WHERE teve_baixa_mes\n",
+        "SELECT uf, porte_empresa, grande_area_cnae, faixa_idade_baixa, SUM(qtd_baixas) AS qtd_baixas\n",
+        "FROM tcc_receita.gold.dash_baixas_idade_mes\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -184,45 +177,17 @@
       "name": "baixas_motivo",
       "displayName": "Baixas de matriz por categoria de motivo",
       "queryLines": [
-        "WITH motivo AS (\n",
-        "    SELECT mes_referencia, cnpj_raiz, MAX(categoria_macro_evento) AS categoria_macro_evento\n",
-        "    FROM tcc_receita.gold.obt_dashboard_eventos\n",
-        "    WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'\n",
-        "      AND eh_matriz = TRUE\n",
-        "      AND situacao_cadastral_posterior = 'BAIXADA'\n",
-        "      AND situacao_cadastral_anterior <> 'BAIXADA'\n",
-        "    GROUP BY mes_referencia, cnpj_raiz\n",
-        ")\n",
-        "SELECT\n",
-        "    f.data_referencia,\n",
-        "    f.uf,\n",
-        "    f.porte_empresa,\n",
-        "    f.grande_area_cnae,\n",
-        "    COALESCE(m.categoria_macro_evento, 'NAO IDENTIFICADO') AS categoria_macro_evento,\n",
-        "    COUNT(*) AS qtd_empresas\n",
-        "FROM tcc_receita.gold.fato_empresa_mes f\n",
-        "LEFT JOIN motivo m\n",
-        "  ON m.mes_referencia = f.mes_referencia\n",
-        " AND m.cnpj_raiz = f.cnpj_raiz\n",
-        "WHERE f.teve_baixa_mes\n",
+        "SELECT uf, porte_empresa, grande_area_cnae, categoria_macro_evento, SUM(qtd_empresas) AS qtd_empresas\n",
+        "FROM tcc_receita.gold.dash_baixas_motivo_mes\n",
         "GROUP BY ALL\n"
       ]
     },
     {
       "name": "eventos",
-      "displayName": "Eventos por tipo e categoria",
+      "displayName": "Eventos por tipo",
       "queryLines": [
-        "SELECT\n",
-        "    data_referencia,\n",
-        "    tipo_evento,\n",
-        "    categoria_macro_evento,\n",
-        "    entidade_tipo,\n",
-        "    eh_matriz,\n",
-        "    uf,\n",
-        "    porte_empresa,\n",
-        "    grande_area_cnae,\n",
-        "    COUNT(*) AS qtd_eventos\n",
-        "FROM tcc_receita.gold.obt_dashboard_eventos\n",
+        "SELECT tipo_evento, uf, porte_empresa, grande_area_cnae, SUM(qtd_eventos) AS qtd_eventos\n",
+        "FROM tcc_receita.gold.dash_eventos_mes\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -351,33 +316,16 @@
       "name": "mercado",
       "displayName": "Mercado ativo (sem identificação)",
       "queryLines": [
-        "SELECT uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas\n",
-        "FROM tcc_receita.gold.dashboard_mercado_ativo\n",
-        "GROUP BY ALL\n"
+        "SELECT uf, municipio, bairro, porte_empresa, grande_area_cnae, nome_cnae, empresas_ativas\n",
+        "FROM tcc_receita.gold.dash_mercado\n"
       ]
     },
     {
       "name": "mercado_bairros",
       "displayName": "Mercado ativo: 20 maiores bairros por município, por CNAE",
       "queryLines": [
-        "WITH por_bairro_cnae AS (\n",
-        "    SELECT uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, nome_cnae, COUNT(*) AS empresas_ativas\n",
-        "    FROM tcc_receita.gold.dashboard_mercado_ativo\n",
-        "    GROUP BY ALL\n",
-        "),\n",
-        "ranking_bairros AS (\n",
-        "    -- Posição do bairro no município pelo total de ativas (todos os CNAEs).\n",
-        "    SELECT\n",
-        "        uf, municipio, bairro,\n",
-        "        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY SUM(empresas_ativas) DESC, bairro) AS posicao\n",
-        "    FROM por_bairro_cnae\n",
-        "    GROUP BY uf, municipio, bairro\n",
-        ")\n",
-        "SELECT c.uf, c.municipio, c.bairro, c.nome_cnae, c.empresas_ativas\n",
-        "FROM por_bairro_cnae c\n",
-        "JOIN ranking_bairros r\n",
-        "  ON r.uf = c.uf AND r.municipio = c.municipio AND r.bairro = c.bairro\n",
-        "WHERE r.posicao <= 20\n"
+        "SELECT uf, municipio, bairro, nome_cnae, empresas_ativas\n",
+        "FROM tcc_receita.gold.dash_mercado_bairros\n"
       ]
     },
     {
@@ -385,11 +333,9 @@
       "displayName": "Maiores empresas ativas (razão social liberada)",
       "queryLines": [
         "SELECT razao_social, nome_fantasia, porte_empresa, capital_social, data_inicio_atividade,\n",
-        "       uf, municipio, COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO') AS bairro, grande_area_cnae, nome_cnae\n",
-        "FROM tcc_receita.gold.dashboard_mercado_ativo\n",
-        "WHERE exibir_razao_social\n",
-        "ORDER BY capital_social DESC\n",
-        "LIMIT 1000\n"
+        "       uf, municipio, bairro, grande_area_cnae, nome_cnae\n",
+        "FROM tcc_receita.gold.dash_mercado_empresas\n",
+        "ORDER BY capital_social DESC\n"
       ]
     },
     {

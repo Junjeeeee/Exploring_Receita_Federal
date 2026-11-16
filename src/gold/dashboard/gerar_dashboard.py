@@ -10,6 +10,11 @@ Como os números respeitam os filtros (filtro de campo = WHERE nas linhas do dat
 - "último mês" e "Δ vs. mês anterior" são colunas que o dataset já entrega por linha; o widget só soma;
 - percentuais são AVG de um indicador 0/100 num dataset de uma linha por empresa (AVG respeita o filtro);
 - taxas por 1.000 ativas são razões de somas: vêm prontas do dataset e só reagem aos filtros que o dataset tem.
+
+Datasets grandes (páginas 2, 4 e 5) leem tabelas gold `dash_*` que o Job já grava no formato do gráfico
+(src/gold/dashboard_agregados.sql; spec 2026-11-16-otimizacao-log-fato-dashboard.md §3.5). Motivo: no Lakeview,
+dataset com mais de 100 mil linhas roda a consulta de novo no warehouse a CADA clique; com a conta pronta na
+tabela, cada clique só lê uma tabela estreita. Os números são os mesmos (mesmo SQL, gravado pelo Job).
 """
 
 import argparse
@@ -29,8 +34,10 @@ FATO = "tcc_receita.gold.fato_empresa_mes"
 # começar em outro mês, o MIN passa a acompanhá-la.
 SEM_CARGA_INICIAL = f"mes_referencia > (SELECT MIN(mes_referencia) FROM {FATO})"
 
-# Bairro exibido no "Mercado ativo": nulo ou vazio vira rótulo explícito (não some do filtro nem das somas).
-BAIRRO = "COALESCE(NULLIF(TRIM(bairro), ''), 'NAO INFORMADO')"
+# Tabelas gold no formato de cada gráfico (gravadas pelo Job em src/gold/dashboard_agregados.sql). A regra do
+# bairro do "Mercado ativo" (nulo ou vazio vira 'NAO INFORMADO') e o corte da carga inicial em dash_fluxos_mes
+# ficam lá, no SQL que grava as tabelas.
+DASH = "tcc_receita.gold.dash_"
 
 # Ordem das séries de cor por porte. Fixa porque a hierarquia é estável (amostra jun–ago/2023:
 # MEI > ME > DEMAIS > EPP, nas aberturas e nas baixas). No Lakeview o PRIMEIRO valor da lista vai para o TOPO da
@@ -192,76 +199,40 @@ GROUP BY ALL
     # Sem CNPJ nem nome: só os atributos usados pelos filtros e pelos indicadores.
     # Empresa que abre e já aparece BAIXADA (D-17) tem as duas flags no mesmo mês: gera DUAS linhas (uma em
     # 'Aberturas', outra em 'Baixas'), e as colunas de baixa só são preenchidas na linha 'Baixas'.
+    # Tabela dash_fluxos_mes = o SQL que este dataset tinha (fato × {Aberturas, Baixas}, sem a carga inicial),
+    # gravado pelo Job: mesmas linhas, então AVG, mediana e somas dão o mesmo resultado para qualquer filtro.
     "fluxos_empresa": ("Aberturas e baixas, uma linha por empresa e tipo", f"""
 SELECT
-    f.mes_referencia,
-    f.data_referencia,
-    f.uf,
-    f.porte_empresa,
-    f.grande_area_cnae,
-    t.fluxo,
-    1 AS qtd,
-    CASE WHEN t.fluxo = 'Aberturas' THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_abertura,
-    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.porte_empresa = 'MEI', 100, 0) END AS pct_mei_baixa,
-    CASE WHEN t.fluxo = 'Baixas'    THEN IF(f.teve_falencia_mes, 100, 0) END     AS pct_falencia_baixa,
-    -- Idade na baixa pela data real (data da baixa − início de atividade); NULL = sem data, fora da mediana.
-    CASE WHEN t.fluxo = 'Baixas'    THEN f.idade_na_baixa_meses / 12.0 END AS idade_baixa_anos,
-    CASE WHEN t.fluxo = 'Baixas' AND f.idade_na_baixa_meses IS NOT NULL
-         THEN IF(f.idade_na_baixa_meses < 24, 100, 0) END AS pct_baixa_menos_2_anos
-FROM {FATO} f
-JOIN (SELECT 'Aberturas' AS fluxo UNION ALL SELECT 'Baixas') t
-  ON (t.fluxo = 'Aberturas' AND f.teve_abertura_mes) OR (t.fluxo = 'Baixas' AND f.teve_baixa_mes)
-WHERE {SEM_CARGA_INICIAL}
-  AND (f.teve_abertura_mes OR f.teve_baixa_mes)
-"""),
-    "baixas_idade": ("Baixas por faixa de idade na baixa", f"""
-SELECT data_referencia, uf, porte_empresa, grande_area_cnae, faixa_idade_baixa, COUNT(*) AS qtd_baixas
-FROM {FATO}
-WHERE teve_baixa_mes
-GROUP BY ALL
-"""),
-    # População e atributos (UF, porte, área) do FATO (teve_baixa_mes: mesmo porte de baixa dos outros widgets,
-    # inclusive o MEI que já aparece BAIXADA — D-17b); da OBT vem só a categoria do motivo (regra única em
-    # dim_mudanca_estado), pelo mesmo critério: matriz que termina BAIXADA sem estar BAIXADA antes (anterior
-    # INEXISTENTE = primeira aparição, D-17). Os dois lados fecham (dq_gold.sql, 2b); se a OBT não tiver o evento,
-    # a baixa aparece como NAO IDENTIFICADO em vez de sumir. Uma categoria por empresa e mês.
-    "baixas_motivo": ("Baixas de matriz por categoria de motivo", f"""
-WITH motivo AS (
-    SELECT mes_referencia, cnpj_raiz, MAX(categoria_macro_evento) AS categoria_macro_evento
-    FROM tcc_receita.gold.obt_dashboard_eventos
-    WHERE tipo_evento = 'MUDOU ESTADO CADASTRAL'
-      AND eh_matriz = TRUE
-      AND situacao_cadastral_posterior = 'BAIXADA'
-      AND situacao_cadastral_anterior <> 'BAIXADA'
-    GROUP BY mes_referencia, cnpj_raiz
-)
-SELECT
-    f.data_referencia,
-    f.uf,
-    f.porte_empresa,
-    f.grande_area_cnae,
-    COALESCE(m.categoria_macro_evento, 'NAO IDENTIFICADO') AS categoria_macro_evento,
-    COUNT(*) AS qtd_empresas
-FROM {FATO} f
-LEFT JOIN motivo m
-  ON m.mes_referencia = f.mes_referencia
- AND m.cnpj_raiz = f.cnpj_raiz
-WHERE f.teve_baixa_mes
-GROUP BY ALL
-"""),
-    # OBT: eventos de todos os tipos (empresa, sócio, CNAE...). NÃO é fonte de aberturas.
-    "eventos": ("Eventos por tipo e categoria", """
-SELECT
+    mes_referencia,
     data_referencia,
-    tipo_evento,
-    categoria_macro_evento,
-    entidade_tipo,
-    eh_matriz,
     uf,
     porte_empresa,
     grande_area_cnae,
-    COUNT(*) AS qtd_eventos
-FROM tcc_receita.gold.obt_dashboard_eventos
+    fluxo,
+    qtd,
+    pct_mei_abertura,
+    pct_mei_baixa,
+    pct_falencia_baixa,
+    idade_baixa_anos,
+    pct_baixa_menos_2_anos
+FROM {DASH}fluxos_mes
+"""),
+    # As três abaixo vêm de tabelas por mês; o dataset soma os meses (nenhum widget usa o mês), e soma de somas
+    # é a mesma soma. Regras de população (porte de baixa D-17b, motivo pela OBT): ver dashboard_agregados.sql.
+    "baixas_idade": ("Baixas por faixa de idade na baixa", f"""
+SELECT uf, porte_empresa, grande_area_cnae, faixa_idade_baixa, SUM(qtd_baixas) AS qtd_baixas
+FROM {DASH}baixas_idade_mes
+GROUP BY ALL
+"""),
+    "baixas_motivo": ("Baixas de matriz por categoria de motivo", f"""
+SELECT uf, porte_empresa, grande_area_cnae, categoria_macro_evento, SUM(qtd_empresas) AS qtd_empresas
+FROM {DASH}baixas_motivo_mes
+GROUP BY ALL
+"""),
+    # OBT: eventos de todos os tipos (empresa, sócio, CNAE...). NÃO é fonte de aberturas.
+    "eventos": ("Eventos por tipo", f"""
+SELECT tipo_evento, uf, porte_empresa, grande_area_cnae, SUM(qtd_eventos) AS qtd_eventos
+FROM {DASH}eventos_mes
 GROUP BY ALL
 """),
 
@@ -288,45 +259,23 @@ LIMIT 20
 """),
 
     # --- página 5: mercado ativo -------------------------------------------------------------------
-    # Os três datasets da página usam o MESMO bairro normalizado (constante BAIRRO), para o filtro de bairro casar.
-    # Sem razão social: MEI costuma ter nome de pessoa física na razão social.
+    # Os três datasets da página leem tabelas dash_mercado* (dashboard_agregados.sql), todas com o MESMO bairro
+    # normalizado, para o filtro de bairro casar. Sem razão social em dash_mercado: MEI costuma ter nome de pessoa
+    # física na razão social. dash_mercado_bairros: 20 maiores bairros de cada município, por CNAE (o widget não
+    # tem top-N). dash_mercado_empresas: 1.000 maiores por capital social, só onde exibir_razao_social (LGPD).
     "mercado": ("Mercado ativo (sem identificação)", f"""
-SELECT uf, municipio, {BAIRRO} AS bairro, porte_empresa, grande_area_cnae, nome_cnae, COUNT(*) AS empresas_ativas
-FROM tcc_receita.gold.dashboard_mercado_ativo
-GROUP BY ALL
+SELECT uf, municipio, bairro, porte_empresa, grande_area_cnae, nome_cnae, empresas_ativas
+FROM {DASH}mercado
 """),
-    # Grão bairro × CNAE (agregado: nunca uma linha por empresa), restrito aos 20 bairros com mais empresas
-    # ativas de cada município (o widget não tem top-N). Como o grão tem CNAE e bairro, os quatro filtros da
-    # página valem aqui; com filtro de CNAE, as barras mostram só as empresas daquele CNAE nesses 20 bairros.
     "mercado_bairros": ("Mercado ativo: 20 maiores bairros por município, por CNAE", f"""
-WITH por_bairro_cnae AS (
-    SELECT uf, municipio, {BAIRRO} AS bairro, nome_cnae, COUNT(*) AS empresas_ativas
-    FROM tcc_receita.gold.dashboard_mercado_ativo
-    GROUP BY ALL
-),
-ranking_bairros AS (
-    -- Posição do bairro no município pelo total de ativas (todos os CNAEs).
-    SELECT
-        uf, municipio, bairro,
-        ROW_NUMBER() OVER (PARTITION BY uf, municipio ORDER BY SUM(empresas_ativas) DESC, bairro) AS posicao
-    FROM por_bairro_cnae
-    GROUP BY uf, municipio, bairro
-)
-SELECT c.uf, c.municipio, c.bairro, c.nome_cnae, c.empresas_ativas
-FROM por_bairro_cnae c
-JOIN ranking_bairros r
-  ON r.uf = c.uf AND r.municipio = c.municipio AND r.bairro = c.bairro
-WHERE r.posicao <= 20
+SELECT uf, municipio, bairro, nome_cnae, empresas_ativas
+FROM {DASH}mercado_bairros
 """),
-    # LGPD: `exibir_razao_social` (gold) é FALSE para MEI, empresário individual (2135) e razão social com
-    # 11 dígitos seguidos. Sem endereço além de município/bairro. LIMIT: não devolver milhões de linhas.
     "mercado_empresas": ("Maiores empresas ativas (razão social liberada)", f"""
 SELECT razao_social, nome_fantasia, porte_empresa, capital_social, data_inicio_atividade,
-       uf, municipio, {BAIRRO} AS bairro, grande_area_cnae, nome_cnae
-FROM tcc_receita.gold.dashboard_mercado_ativo
-WHERE exibir_razao_social
+       uf, municipio, bairro, grande_area_cnae, nome_cnae
+FROM {DASH}mercado_empresas
 ORDER BY capital_social DESC
-LIMIT 1000
 """),
 
     # --- página 6: contexto ------------------------------------------------------------------------
@@ -354,12 +303,9 @@ COLUNAS = {
     "fluxos_empresa": ["mes_referencia", "data_referencia", "uf", "porte_empresa", "grande_area_cnae", "fluxo",
                        "qtd", "pct_mei_abertura", "pct_mei_baixa", "pct_falencia_baixa", "idade_baixa_anos",
                        "pct_baixa_menos_2_anos"],
-    "baixas_idade": ["data_referencia", "uf", "porte_empresa", "grande_area_cnae", "faixa_idade_baixa",
-                     "qtd_baixas"],
-    "baixas_motivo": ["data_referencia", "uf", "porte_empresa", "grande_area_cnae", "categoria_macro_evento",
-                      "qtd_empresas"],
-    "eventos": ["data_referencia", "tipo_evento", "categoria_macro_evento", "entidade_tipo", "eh_matriz",
-                "uf", "porte_empresa", "grande_area_cnae", "qtd_eventos"],
+    "baixas_idade": ["uf", "porte_empresa", "grande_area_cnae", "faixa_idade_baixa", "qtd_baixas"],
+    "baixas_motivo": ["uf", "porte_empresa", "grande_area_cnae", "categoria_macro_evento", "qtd_empresas"],
+    "eventos": ["tipo_evento", "uf", "porte_empresa", "grande_area_cnae", "qtd_eventos"],
     "taxas_setor": ["grande_area_cnae", "taxa_saldo_por_mil"] + _TAXAS_COLS,
     "extremos_setor": ["posicao", "grande_area_cnae", "taxa_saldo_por_mil"],
     "taxas_uf": ["uf", "taxa_crescimento_por_mil"] + _TAXAS_COLS,
